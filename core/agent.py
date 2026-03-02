@@ -180,8 +180,30 @@ class Agent:
         except Exception as e:
             return f"搜索出错: {str(e)}"
 
-    def _execute_send(self, file_path: str, target: Optional[str] = None) -> str:
-        """执行文件发送"""
+    def _execute_send(self, file_index: Optional[int] = None, file_path: Optional[str] = None, target: Optional[str] = None) -> str:
+        """
+        执行文件发送
+
+        Args:
+            file_index: 文件序号（推荐使用，从候选列表中选择）
+            file_path: 文件完整路径（备选，直接指定路径）
+            target: 发送目标
+        """
+        # 优先使用序号从缓存获取路径
+        if file_index is not None:
+            if not self.candidate_files:
+                return "❌ 发送失败: 没有可用的搜索结果，请先搜索文件"
+
+            if file_index < 1 or file_index > len(self.candidate_files):
+                return f"❌ 发送失败: 序号 {file_index} 无效，请选择 1-{len(self.candidate_files)} 之间的数字"
+
+            file_path = self.candidate_files[file_index - 1]["path"]
+            file_name = self.candidate_files[file_index - 1]["name"]
+            print(f"[调试] 使用序号 {file_index} 获取路径: {file_path}")
+
+        elif file_path is None:
+            return "❌ 发送失败: 请提供 file_index（序号）或 file_path（文件路径）"
+
         result = send_file(file_path, target)
 
         if result["success"]:
