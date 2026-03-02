@@ -1,0 +1,19 @@
+# WeSeeker 配置文件
+
+llm:
+  api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "sk-a4334bda622d44588d1d08f58d7b84ff"
+  model: "qwen3.5-plus"
+
+everything:
+  host: "127.0.0.1"
+  port: 8080
+
+paths:
+  # {username} 运行时自动替换为当前用户
+  desktop: "C:\\Users\\{username}\\Desktop"
+  downloads: "C:\\Users\\{username}\\Downloads"
+  documents: "C:\\Users\\{username}\\Documents"
+
+sender:
+  target: "文件传输助手"  # 默认发送目标

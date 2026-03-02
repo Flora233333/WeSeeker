@@ -1,0 +1,1 @@
+# WeSeeker Core Module
