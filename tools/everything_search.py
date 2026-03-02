@@ -27,6 +27,67 @@ def load_config() -> dict:
     return config
 
 
+# 默认排除的文件扩展名（无意义的系统文件）
+EXCLUDED_EXTENSIONS = {
+    '.lnk',      # 快捷方式
+    '.tmp',      # 临时文件
+    '.temp',     # 临时文件
+    '.bak',      # 备份文件
+    '.old',      # 旧版本文件
+    '.swp',      # vim 交换文件
+    '.swo',      # vim 交换文件
+}
+
+# 默认排除的文件名模式（完全匹配）
+EXCLUDED_FILENAMES = {
+    'thumbs.db',      # Windows 缩略图缓存
+    'desktop.ini',    # 文件夹配置
+    '.ds_store',      # macOS 系统文件
+    '~$recycle.bin',  # 回收站
+    'folder.jpg',     # 文件夹缩略图
+    'albumartsmall.jpg',
+    'albumart.jpg',
+}
+
+# 默认排除的前缀（如 Office 临时文件 ~$）
+EXCLUDED_PREFIXES = (
+    '~$',            # Office 临时文件
+    '.~',            # 某些编辑器临时文件
+    '._',            # macOS 资源分支文件
+)
+
+
+def _is_excluded_file(file_name: str) -> bool:
+    """
+    检查文件是否应该被排除
+
+    Args:
+        file_name: 文件名（不含路径）
+
+    Returns:
+        True 如果文件应该被排除
+    """
+    if not file_name:
+        return True
+
+    file_name_lower = file_name.lower()
+    ext = os.path.splitext(file_name_lower)[1]
+
+    # 检查扩展名
+    if ext in EXCLUDED_EXTENSIONS:
+        return True
+
+    # 检查文件名（完全匹配）
+    if file_name_lower in EXCLUDED_FILENAMES:
+        return True
+
+    # 检查前缀
+    if file_name_lower.startswith(EXCLUDED_PREFIXES):
+        return True
+
+    return False
+
+
 def search_files(
     keyword: str,
     path: Optional[str] = None,
@@ -74,10 +135,12 @@ def search_files(
     # 调用 Everything HTTP API
     # Everything HTTP API: http://localhost:8080/?search=keyword&json=1&count=20
     url = f"http://{host}:{port}/"
+    # 请求更多结果以补偿过滤掉的文件（最多请求 3 倍）
+    request_count = min(max_results * 3, 100)
     params = {
         "search": query,
         "json": 1,  # JSON 格式输出
-        "count": max_results,  # 结果数量限制
+        "count": request_count,  # 结果数量限制（多请求一些用于过滤）
         "path_column": 1,  # 包含路径列
         "size_column": 1,  # 包含大小列
         "date_modified_column": 1,  # 包含修改时间列
@@ -104,6 +167,10 @@ def search_files(
             file_name = item.get("name", "")
             dir_path = item.get("path", "")
 
+            # 过滤无意义的系统文件
+            if _is_excluded_file(file_name):
+                continue
+
             # 拼接完整路径
             if dir_path and file_name:
                 full_path = os.path.join(dir_path, file_name)
@@ -128,7 +195,8 @@ def search_files(
             }
             results.append(file_info)
 
-        return results
+        # 限制返回数量
+        return results[:max_results]
 
     except requests.exceptions.ConnectionError:
         raise Exception("Everything 服务未启动，请确认 Everything 是否在运行并开启了 HTTP 服务（默认端口 8080）")

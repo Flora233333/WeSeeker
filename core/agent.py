@@ -14,6 +14,7 @@ from typing import Optional, List, Dict, Any
 from core.llm_router import LLMClient, load_system_prompt
 from tools.everything_search import search_files, SEARCH_TOOL_SCHEMA, format_file_size
 from tools.file_sender import send_file, SEND_TOOL_SCHEMA
+from tools.file_summarizer import file_summarizer, PREVIEW_TOOL_SCHEMA
 
 
 class Agent:
@@ -25,12 +26,13 @@ class Agent:
         self.conversation_history: List[Dict[str, str]] = []
 
         # 可用工具列表
-        self.tools = [SEARCH_TOOL_SCHEMA, SEND_TOOL_SCHEMA]
+        self.tools = [SEARCH_TOOL_SCHEMA, SEND_TOOL_SCHEMA, PREVIEW_TOOL_SCHEMA]
 
         # 工具函数映射
         self.tool_functions = {
             "search_files": self._execute_search,
-            "send_file": self._execute_send
+            "send_file": self._execute_send,
+            "file_summarizer": self._execute_preview
         }
 
         # 候选文件缓存（用于用户确认发送）
@@ -210,6 +212,95 @@ class Agent:
             return f"✅ 发送成功！文件「{result['file_name']}」已发送到「{result['target']}」"
         else:
             return f"❌ 发送失败: {result['error']}"
+
+    def _execute_preview(self, file_path: str, depth: str = "L1", **kwargs) -> str:
+        """
+        执行文件预览
+
+        Args:
+            file_path: 文件完整路径
+            depth: 预览深度 L1/L2/L3
+            **kwargs: 其他可选参数
+        """
+        try:
+            # 调用 file_summarizer 提取内容
+            result = file_summarizer(file_path, depth=depth)
+
+            if not result.get("success"):
+                return f"❌ 预览失败: {result.get('error', '未知错误')}"
+
+            file_type = result.get("file_type", "unknown")
+            content = result.get("content", "")
+            metadata = result.get("metadata", {})
+
+            # 格式化预览结果
+            preview_lines = [f"📄 文件预览: {os.path.basename(file_path)}"]
+            preview_lines.append(f"类型: {file_type}")
+
+            if metadata.get("encoding"):
+                preview_lines.append(f"编码: {metadata['encoding']}")
+
+            if metadata.get("total_chars"):
+                preview_lines.append(f"总字符数: {metadata['total_chars']}")
+
+            if metadata.get("has_more"):
+                preview_lines.append("⚠️ 文件内容较长，仅显示部分内容")
+
+            # 如果有文本内容，使用 LLM 进行总结
+            if content:
+                preview_lines.append("\n📋 内容摘要:\n")
+
+                summary = self._summarize_content(content, file_type, os.path.basename(file_path))
+                preview_lines.append(summary)
+
+                # 添加原始内容片段（供 LLM 参考）
+                preview_lines.append(f"\n📄 内容片段（前1000字符）:\n```\n{content[:1000]}\n```")
+
+            return "\n".join(preview_lines)
+
+        except Exception as e:
+            return f"预览出错: {str(e)}"
+
+    def _summarize_content(self, content: str, file_type: str, file_name: str) -> str:
+        """
+        使用 LLM 对文件内容进行总结
+        """
+        try:
+            file_type_desc = {
+                'text': '文本文件',
+                'word': 'Word 文档',
+                'excel': 'Excel 表格',
+                'ppt': 'PPT 演示文稿',
+                'pdf': 'PDF 文档'
+            }.get(file_type, '文件')
+
+            prompt = f"""请对以下 {file_type_desc}「{file_name}」的内容进行简要总结。
+
+要求：
+1. 用 2-3 句话概括文件的核心内容
+2. 如果是结构化文档（如代码、配置），说明其主要功能或用途
+3. 如果是普通文本，提取关键信息
+4. 总结要简洁明了，不超过 150 字
+
+文件内容：
+---
+{content[:2000]}
+---
+
+请用中文给出总结："""
+
+            response = self.llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是文件管家，擅长快速理解文件内容并给出简洁准确的总结。"},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+
+            summary = self.llm_client.get_response_content(response)
+            return summary if summary else "无法生成总结"
+
+        except Exception as e:
+            return f"总结生成失败: {str(e)}"
 
     def clear_history(self):
         """清空对话历史"""
