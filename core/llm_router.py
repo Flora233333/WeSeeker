@@ -89,7 +89,7 @@ class LLMClient:
 
 def load_system_prompt() -> str:
     """加载系统提示词"""
-    prompt_path = os.path.join(os.path.dirname(__file__), "..", "..", "weseeker_system_prompt.md")
+    prompt_path = os.path.join(os.path.dirname(__file__), "..", "config", "prompts", "system_prompt.md")
     if os.path.exists(prompt_path):
         with open(prompt_path, "r", encoding="utf-8") as f:
             return f.read()

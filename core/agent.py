@@ -11,9 +11,9 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from typing import Optional, List, Dict, Any
-from core.llm_client import LLMClient, load_system_prompt
-from tools.search import search_files, SEARCH_TOOL_SCHEMA, format_file_size
-from tools.sender import send_file, SEND_TOOL_SCHEMA
+from core.llm_router import LLMClient, load_system_prompt
+from tools.everything_search import search_files, SEARCH_TOOL_SCHEMA, format_file_size
+from tools.file_sender import send_file, SEND_TOOL_SCHEMA
 
 
 class Agent:
