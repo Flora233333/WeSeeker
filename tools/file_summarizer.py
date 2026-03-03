@@ -44,7 +44,7 @@ def detect_file_type(file_path: str) -> str:
         return 'unknown'
 
 
-def file_summarizer(
+def read_file_content(
     file_path: str,
     depth: str = "L1",
     max_chars: Optional[int] = None,
@@ -52,14 +52,14 @@ def file_summarizer(
     max_rows: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    文件内容预览与摘要
+    读取文件内容
 
-    根据文件类型自动选择预览策略，提取内容并返回结构化结果。
+    根据文件类型自动选择读取策略，提取内容并返回结构化结果。
     本函数不直接调用 LLM，仅做本地内容提取。
 
     Args:
         file_path: 文件完整路径
-        depth: 预览深度: "L1"(默认) / "L2"(详细) / "L3"(全量)
+        depth: 读取深度: "L1"(默认) / "L2"(详细) / "L3"(全量)
         max_chars: 文本类最大读取字符数（覆盖 depth 默认值）
         max_pages: PPT/PDF 最大预览页数（覆盖 depth 默认值）
         max_rows: Excel 最大预览行数（覆盖 depth 默认值）
@@ -340,12 +340,15 @@ def _extract_metadata_only(file_path: str) -> Dict[str, Any]:
 
 
 # ============== Tool Schema（供 LLM function calling 使用） ==============
+# 注意：实际的 Agent 现在使用 core/agent.py 中定义的 PREVIEW_TOOL_SCHEMA
+# 该 schema 支持 file_index 优先从缓存获取路径，避免 LLM 路径幻觉
+# 此处保留旧版 schema 用于向后兼容和独立模块使用
 
 PREVIEW_TOOL_SCHEMA = {
     "type": "function",
     "function": {
-        "name": "file_summarizer",
-        "description": "预览文件内容。支持文本文件(.txt/.md/.py/.json等)，Word/Excel/PPT/PDF暂不支持。深度L1=快速预览(约2000字)，L2=详细(约8000字)，L3=完整(需确认)。",
+        "name": "read_file_content",
+        "description": "[DEPRECATED - 使用 agent.py 中的 schema] 读取文件内容。支持文本文件(.txt/.md/.py/.json等)，Word/Excel/PPT/PDF暂不支持。深度L1=快速预览(约2000字)，L2=详细(约8000字)，L3=完整(需确认)。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -355,7 +358,7 @@ PREVIEW_TOOL_SCHEMA = {
                 },
                 "depth": {
                     "type": "string",
-                    "description": "预览深度: L1(默认快速预览)/L2(详细)/L3(完整)",
+                    "description": "读取深度: L1(默认快速预览)/L2(详细)/L3(完整)",
                     "enum": ["L1", "L2", "L3"],
                     "default": "L1"
                 }

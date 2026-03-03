@@ -6,6 +6,7 @@ Agent 主循环
 import json
 import sys
 import os
+import re
 
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -14,16 +15,65 @@ from typing import Optional, List, Dict, Any
 from core.llm_router import LLMClient, load_system_prompt
 from tools.everything_search import search_files, SEARCH_TOOL_SCHEMA, format_file_size
 from tools.file_sender import send_file, SEND_TOOL_SCHEMA
-from tools.file_summarizer import file_summarizer, PREVIEW_TOOL_SCHEMA
+from tools.file_summarizer import read_file_content
+
+
+# 文件预览工具 Schema（支持 file_index 优先从缓存获取路径，避免 LLM 路径幻觉）
+PREVIEW_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "read_file_content",
+        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)，Word/Excel/PPT/PDF暂不支持。优先使用 file_index 从搜索结果中选择，避免路径错误。深度L1=快速预览(约2000字)，L2=详细(约8000字)，L3=完整(需确认)。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_index": {
+                    "type": "integer",
+                    "description": "文件序号（推荐），从搜索结果列表中选择，如 1、2、3 等。优先使用此参数！"
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "文件完整路径（备选），仅在没有搜索结果或读取未搜索的文件时使用"
+                },
+                "depth": {
+                    "type": "string",
+                    "description": "预览深度: L1(默认快速预览)/L2(详细)/L3(完整)",
+                    "enum": ["L1", "L2", "L3"],
+                    "default": "L1"
+                }
+            },
+            "required": []
+        }
+    }
+}
+
+
+def _clean_markdown(text: str) -> str:
+    """简单去除 Markdown 标记，纯文本输出"""
+    if not text:
+        return text
+    # 去除加粗、斜体
+    text = re.sub(r'\*\*|\*|__|_', '', text)
+    # 去除标题标记
+    text = re.sub(r'#{1,6}\s*', '', text)
+    # 去除代码块标记，保留内容
+    text = re.sub(r'```(\w+)?\n?', '', text)
+    text = re.sub(r'```', '', text)
+    # 去除行内代码
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    # 去除引用标记
+    text = re.sub(r'^>\s?', '', text, flags=re.MULTILINE)
+    return text
 
 
 class Agent:
     """文件管家 Agent"""
 
-    def __init__(self):
+    def __init__(self, debug: bool = False):
         self.llm_client = LLMClient()
         self.system_prompt = load_system_prompt()
         self.conversation_history: List[Dict[str, str]] = []
+        self.debug = debug  # 调试模式开关
 
         # 可用工具列表
         self.tools = [SEARCH_TOOL_SCHEMA, SEND_TOOL_SCHEMA, PREVIEW_TOOL_SCHEMA]
@@ -32,7 +82,7 @@ class Agent:
         self.tool_functions = {
             "search_files": self._execute_search,
             "send_file": self._execute_send,
-            "file_summarizer": self._execute_preview
+            "read_file_content": self._execute_read_file
         }
 
         # 候选文件缓存（用于用户确认发送）
@@ -83,6 +133,8 @@ class Agent:
             # 直接返回文本回复
             content = self.llm_client.get_response_content(response)
             if content:
+                # 清理 Markdown 标记（已由 system_prompt 约束，暂不需要代码清洗）
+                # content = _clean_markdown(content)
                 # 添加到历史
                 self.conversation_history.append({
                     "role": "assistant",
@@ -99,7 +151,8 @@ class Agent:
             function_name = tool_call.function.name
             arguments = json.loads(tool_call.function.arguments)
 
-            print(f"[调试] 调用工具: {function_name}({arguments})")
+            if self.debug:
+                print(f"[调试] 调用工具: {function_name}({arguments})")
 
             if function_name in self.tool_functions:
                 try:
@@ -142,6 +195,8 @@ class Agent:
 
         content = self.llm_client.get_response_content(response)
         if content:
+            # 清理 Markdown 标记（CMD 不支持渲染）
+            content = _clean_markdown(content)
             self.conversation_history.append({
                 "role": "assistant",
                 "content": content
@@ -201,7 +256,8 @@ class Agent:
 
             file_path = self.candidate_files[file_index - 1]["path"]
             file_name = self.candidate_files[file_index - 1]["name"]
-            print(f"[调试] 使用序号 {file_index} 获取路径: {file_path}")
+            if self.debug:
+                print(f"[调试] 使用序号 {file_index} 获取路径: {file_path}")
 
         elif file_path is None:
             return "❌ 发送失败: 请提供 file_index（序号）或 file_path（文件路径）"
@@ -213,18 +269,34 @@ class Agent:
         else:
             return f"❌ 发送失败: {result['error']}"
 
-    def _execute_preview(self, file_path: str, depth: str = "L1", **kwargs) -> str:
+    def _execute_read_file(self, file_index: Optional[int] = None, file_path: Optional[str] = None, depth: str = "L1", **kwargs) -> str:
         """
-        执行文件预览
+        执行文件内容读取
 
         Args:
-            file_path: 文件完整路径
-            depth: 预览深度 L1/L2/L3
+            file_index: 文件序号（推荐使用，从候选列表中选择）
+            file_path: 文件完整路径（备选，直接指定路径）
+            depth: 读取深度 L1/L2/L3
             **kwargs: 其他可选参数
         """
+        # 优先使用序号从缓存获取路径
+        if file_index is not None:
+            if not self.candidate_files:
+                return "❌ 读取失败: 没有可用的搜索结果，请先搜索文件"
+
+            if file_index < 1 or file_index > len(self.candidate_files):
+                return f"❌ 读取失败: 序号 {file_index} 无效，请选择 1-{len(self.candidate_files)} 之间的数字"
+
+            file_path = self.candidate_files[file_index - 1]["path"]
+            if self.debug:
+                print(f"[调试] 使用序号 {file_index} 获取读取路径: {file_path}")
+
+        elif file_path is None:
+            return "❌ 读取失败: 请提供 file_index（序号）或 file_path（文件路径）"
+
         try:
-            # 调用 file_summarizer 提取内容
-            result = file_summarizer(file_path, depth=depth)
+            # 调用 read_file_content 提取内容
+            result = read_file_content(file_path, depth=depth)
 
             if not result.get("success"):
                 return f"❌ 预览失败: {result.get('error', '未知错误')}"

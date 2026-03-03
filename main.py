@@ -40,12 +40,21 @@ def print_welcome():
 
 def main():
     """主函数"""
+    import argparse
+    parser = argparse.ArgumentParser(description="WeSeeker 文件管家")
+    parser.add_argument("--debug", "-d", action="store_true", help="启用调试模式，显示工具调用信息")
+    args = parser.parse_args()
+
     print_welcome()
 
     # 初始化 Agent
     try:
-        agent = Agent()
-        print("✅ Agent 初始化成功\n")
+        agent = Agent(debug=args.debug)
+        print(f"✅ Agent 初始化成功")
+        if args.debug:
+            print("🐛 调试模式已启用\n")
+        else:
+            print()
     except Exception as e:
         print(f"❌ Agent 初始化失败: {e}")
         print("请检查配置文件 config/settings.yaml 是否正确")

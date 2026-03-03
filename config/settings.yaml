@@ -1,9 +1,35 @@
 # WeSeeker 配置文件
 
 llm:
-  api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  api_key: "sk-a4334bda622d44588d1d08f58d7b84ff"
-  model: "qwen3.5-plus"
+  # LLM 提供商（必须显式配置，不再自动检测）
+  # 支持三种：
+  # - lmstudio: LM Studio 本地部署（支持任意 IP:端口）
+  # - ollama: Ollama 本地部署
+  # - cloud: 云端 API（包括 dashscope、openai、deepseek、Kimi 等）
+  provider: "lmstudio"
+
+  # API 基础配置
+  # 云端 API: 填写服务商提供的完整地址（如 https://dashscope.aliyuncs.com/compatible-mode/v1）
+  # LM Studio: 填写界面显示的地址（如 http://100.69.36.118:1234，程序会自动补全 /v1）
+  # Ollama: 默认 http://localhost:11434（程序会自动补全 /v1）
+  api_base: "http://100.69.36.118:1234"
+
+  # API 密钥
+  # 云端 API: 必须填写有效的 API Key
+  # 本地 LLM (lmstudio/ollama): 可不填或填任意值
+  api_key: ""
+
+  # 模型名称
+  # 云端: 填写服务商要求的模型名（如 qwen3.5-plus, gpt-4, deepseek-chat）
+  # 本地: LM Studio 可填任意值，Ollama 需填实际模型名（如 qwen2.5:14b）
+  model: ""
+
+  # 本地 LLM 专用配置（仅 lmstudio/ollama 生效）
+  local:
+    # 超时设置（秒）：本地模型响应较慢，建议 >= 60
+    timeout: 60
+    # 温度参数（控制生成随机性，0-1之间）
+    temperature: 0.3
 
 everything:
   host: "127.0.0.1"
