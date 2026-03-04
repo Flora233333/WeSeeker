@@ -236,7 +236,7 @@ sender:
 | 2026-03-03 | `f1ff399` | Bug 修复 | 修复 LLM 幻觉导致文件路径错误：send_file 新增 file_index 参数，LLM 用序号引用文件而非自行拼接路径，从 candidate_files 缓存获取真实路径 |
 | 2026-03-03 | `c41945d` | 功能 | 实现文件预览总结：file_summarizer.py 支持文本类文件提取（多编码、三级深度），新增搜索结果过滤（排除 .lnk/.tmp/desktop.ini 等），Agent 集成预览工具 + LLM 摘要，补充 file_peek.md，新增 4 个测试脚本 |
 | 2026-03-04 | `e73b52b` | 功能+修复 | 多维度增强：支持本地 LLM（LM Studio/Ollama），新增 --debug 调试模式，System Prompt 新增纯文本输出约束，read_file_content 支持 file_index 防幻觉，统一工具名（file_summarizer→read_file_content） |
-| 2026-03-04 | 未提交 | Prompt 重写 | 重写 system_prompt_2.md（修正工具列表/参数/不存在功能的描述），重写 file_search.md / file_peek.md / file_send.md（完整的工具调用指南），重写 chat.md（6 类场景处理），创建 task_background.md |
+| 2026-03-04 | `24755be` | Prompt 重写+文档 | 新增 system_prompt_2.md（修正工具列表/参数/移除未实现功能描述），重写 file_search.md / file_peek.md / file_send.md（完整工具调用指南），重写 chat.md（6 类场景处理），新增 task_background.md（项目任务背景+维护规范） |
 
 ---
 
