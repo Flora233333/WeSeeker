@@ -1,144 +1,135 @@
-# WeSeeker 唯寻 - 智能文件管家
+# WeSeeker 唯寻
 
-一个运行在 Windows 电脑上的智能文件助手，通过自然语言帮你搜索和发送文件。
+运行在 Windows PC 上的智能文件管家 Agent。用户通过自然语言描述文件需求，系统基于 LLM + Everything 在本地搜索文件、预览文本内容，并在确认后执行发送（当前为 Mock 发送）。
 
-## 功能特性
+## 当前状态（2026-03）
 
-- **自然语言交互**：用口语化的方式描述文件，无需记住精确文件名
-- **毫秒级搜索**：基于 Everything SDK，实现全盘文件快速检索
-- **智能路径识别**：自动理解"桌面"、"下载"、"文档"等位置描述
-- **微信发送**：搜索确认后，一键发送到微信「文件传输助手」
-- **安全可靠**：只读权限，绝不执行删除、修改等危险操作
+项目处于可用 MVP 阶段，核心链路已可跑通：
 
-## 目录结构
+- CLI 对话入口可用（支持 `--debug`）
+- Agent 支持工具调用与最多 5 轮连续推理
+- 已实现重复查询拦截、低增益早停与澄清追问
+- 文件搜索基于 Everything HTTP API（含系统垃圾文件过滤）
+- 文本预览支持 25+ 类型与多编码
+- 文件发送为 Mock（仅日志输出，不实际发送）
 
-```
+## 核心能力
+
+- 自然语言文件检索（关键词 + 路径提示）
+- 路径别名识别（桌面/下载/文档）
+- `file_index` 机制减少 LLM 路径幻觉
+- 文本类文件内容读取与二次摘要
+- 连续工具推理中的停止条件与澄清机制
+
+## 项目结构
+
+```text
 WeSeeker/
 ├── config/
-│   └── settings.yaml      # 配置文件
+│   ├── settings.yaml
+│   └── prompts/
+│       ├── system_prompt.md
+│       ├── system_prompt_2.md
+│       ├── chat.md
+│       └── tool_prompts/
 ├── core/
-│   ├── __init__.py
-│   ├── agent.py           # Agent 主循环
-│   └── llm_client.py      # LLM 客户端封装
+│   ├── agent.py
+│   └── llm_router.py
 ├── tools/
-│   ├── __init__.py
-│   ├── search.py          # Everything 搜索工具
-│   └── sender.py          # 文件发送工具
-├── main.py                # CLI 入口
-├── test_agent.py          # 测试脚本
-└── requirements.txt       # 依赖
+│   ├── everything_search.py
+│   ├── file_summarizer.py
+│   └── file_sender.py
+├── main.py
+├── test_iterative_tool_loop.py
+└── task_background.md
 ```
+
+> 完整设计与阶段性状态请参考：`task_background.md`、`WeSeeker-唯寻_技术大纲.md`
+
+## 环境要求
+
+- 操作系统：Windows（推荐）
+- Python：3.8+
+- 依赖安装：`pip install -r requirements.txt`
+- Everything：需开启 HTTP 服务（默认 `127.0.0.1:8080`）
+- 测试执行环境：`conda base`（项目依赖已在 base 环境验证）
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1) 安装依赖
 
 ```bash
-cd WeSeeker
 pip install -r requirements.txt
 ```
 
-### 2. 配置
+### 2) 配置 LLM 与路径
 
-编辑 `config/settings.yaml`，填写你的 API Key：
+编辑 `config/settings.yaml`：
 
 ```yaml
 llm:
-  api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  api_key: "你的API_KEY"  # 替换为你的通义千问 API Key
-  model: "qwen-plus"
-```
-
-### 3. 启动 Everything
-
-确保 [Everything](https://www.voidtools.com/) 软件正在运行，并开启 HTTP 服务：
-
-1. 打开 Everything
-2. 菜单：工具 → 选项 → HTTP 服务器
-3. 勾选"启用 HTTP 服务器"，端口设为 `8080`
-
-### 4. 运行
-
-```bash
-python main.py
-```
-
-## 使用示例
-
-```
-👤 你: 帮我找一下桌面上的打卡文件
-
-🤖 文件管家: 找到 1 个相关文件：
-   ① 打卡.txt — 53.3 KB — 修改于 2025-02-20
-   你要哪个？
-
-👤 你: 发给我
-
-🤖 文件管家: 搞定～文件已发送到你的手机微信啦！
-```
-
-## 支持的搜索方式
-
-| 输入示例 | 说明 |
-|---------|------|
-| `帮我找一下桌面上的打卡文件` | 指定路径 + 关键词 |
-| `找一下打卡` | 仅关键词，全盘搜索 |
-| `搜索打卡.txt` | 带后缀精确搜索 |
-| `我想找桌面上有个打卡的文件` | 口语化表达 |
-
-## 配置说明
-
-```yaml
-# config/settings.yaml
-
-llm:
-  api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"  # API 地址
-  api_key: "YOUR_API_KEY"  # 你的 API Key
-  model: "qwen-plus"       # 模型名称
+  provider: "lmstudio"      # lmstudio / ollama / cloud
+  api_base: "http://127.0.0.1:1234"
+  api_key: ""               # 本地模型可留空
+  model: ""
 
 everything:
-  host: "127.0.0.1"        # Everything HTTP 服务地址
-  port: 8080               # 端口
+  host: "127.0.0.1"
+  port: 8080
 
 paths:
   desktop: "C:\\Users\\{username}\\Desktop"
   downloads: "C:\\Users\\{username}\\Downloads"
   documents: "C:\\Users\\{username}\\Documents"
-
-sender:
-  target: "文件传输助手"    # 默认发送目标
 ```
 
-## MVP 功能范围
+### 3) 启动 Everything HTTP 服务
+
+在 Everything 中启用：`工具 -> 选项 -> HTTP 服务器 -> 启用`。
+
+### 4) 运行
+
+```bash
+python main.py
+```
+
+调试模式：
+
+```bash
+python main.py --debug
+```
+
+## 测试
+
+> 按项目约定，测试请在 `conda base` 环境执行。
+
+连续工具推理测试：
+
+```bash
+conda run --no-capture-output -n base python test_iterative_tool_loop.py
+```
+
+## 已实现 / 未实现
 
 ### 已实现
 
-- [x] 命令行交互入口
-- [x] LLM 意图识别 + 工具调用
-- [x] Everything 文件搜索
-- [x] 文件发送（Mock 实现，打印日志）
-- [x] 路径别名映射
+- CLI 入口与对话历史管理（基础）
+- LLM Router（lmstudio / ollama / cloud）
+- Everything 文件搜索工具
+- 文本内容读取工具（L1/L2/L3）
+- 连续工具推理（最多 5 轮）
 
-### 暂未实现
+### 部分实现 / 待完善
 
-- [ ] 实际微信发送接口
-- [ ] 文件预览功能
-- [ ] 敏感文件安全校验
-- [ ] 上下文持久化
-- [ ] 多平台监听
-
-## 技术栈
-
-- **Python 3.8+**
-- **OpenAI SDK**：LLM 调用
-- **Everything HTTP API**：文件搜索
-- **PyYAML**：配置管理
+- `send_file` 目前为 Mock
+- `conversation.py` / `security_gate.py` / `sensitive_sanitizer.py` 仍待落地
+- 多格式预览（docx/xlsx/pptx/pdf）待实现
 
 ## 注意事项
 
-1. 确保 Everything 已开启 HTTP 服务
-2. API Key 请妥善保管，不要提交到公开仓库
-3. 当前发送功能为 Mock 实现，仅打印日志不实际发送
+- 请勿将真实 API Key 提交到仓库
+- 当前为只读文件操作设计，不执行删除/修改/移动
+- 仓库中部分旧测试文件已失效，详见 `task_background.md`
 
 ## License
 
