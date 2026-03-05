@@ -1,7 +1,7 @@
 # WeSeeker 唯寻 — 项目任务背景
 
 > 本文件是新会话的上下文载入口，用于快速了解项目现状。请持续维护。
-> 最后更新：2026-03-04
+> 最后更新：2026-03-05
 
 ---
 
@@ -86,7 +86,7 @@ WeSeeker/
 │           ├── file_peek.md           # 预览工具 prompt（完整）
 │           └── file_send.md           # 发送工具 prompt（完整）
 ├── core/
-│   ├── agent.py                       # Agent 主循环（~380行）         ✅ 已实现
+│   ├── agent.py                       # Agent 主循环（~530行）         ✅ 已实现（新增最多5轮连续工具推理+早停机制）
 │   ├── llm_router.py                  # LLM 客户端封装（~191行）       ✅ 已实现
 │   ├── conversation.py                # 上下文管理器                    ❌ 空壳
 │   ├── security_gate.py               # 安全指令过滤器                  ❌ 空壳
@@ -119,16 +119,20 @@ WeSeeker/
 ### 核心链路（可工作）
 
 1. **CLI 交互** — main.py 提供命令行入口，支持 `--debug` 调试模式、退出/清空命令
-2. **Agent 调度** — 用户输入 → LLM 意图识别 → 工具调用 → 结果回传 → 自然语言回复
+2. **Agent 调度** — 用户输入 → LLM 意图识别 → 工具调用 → 结果回传 → 自然语言回复（支持最多 5 轮连续工具推理 + 早停追问）
 3. **LLM 多提供商** — 支持 lmstudio / ollama / cloud 三种模式，通过 settings.yaml 中 `provider` 字段切换
 4. **文件搜索** — 通过 Everything HTTP API 进行关键词+路径搜索，自动过滤系统垃圾文件（.lnk/.tmp/desktop.ini 等）
 5. **文本文件预览** — 支持 .txt/.md/.py/.json/.csv/.log/.yaml 等 25+ 种文本格式，多编码兼容（UTF-8/GBK/GB2312/UTF-16），三级深度 L1/L2/L3
 6. **file_index 防幻觉** — 搜索结果缓存在 Agent.candidate_files，LLM 用序号引用文件而非编造路径
 7. **LLM 二次摘要** — 文件内容提取后，额外调一次 LLM 生成口语化总结
+8. **连续工具推理** — Agent 支持最多 5 轮自动工具推理，具备重复搜索拦截、低增益早停与最小澄清追问
 
 ### 已实现但为 Mock
 
 - **文件发送** — send_file 仅打印日志到控制台，不实际发送
+
+**注意**：项目测试时需要在conda的base环境中进行，只有base环境才安装了项目所需依赖（conda activate base）
+
 
 ---
 
@@ -138,7 +142,7 @@ WeSeeker/
    - `test_search.py` — 导入 `tools.search`（已重命名为 `tools.everything_search`）
    - `test_full_workflow.py` — 调用 `agent._execute_preview()`（已重命名为 `_execute_read_file`）
    - `test_preview_full.py` — 同上
-2. **system_prompt.md（v1）与实际不符** — 列了 11 个工具但只有 3 个存在，包含 PIN 验证、脱敏等未实现的功能描述。已由 system_prompt_2.md 替代，但代码中 `llm_router.py` 的 `load_system_prompt()` 仍加载旧版
+2. **文档与实现仍有局部不一致** — `README.md` 仍使用旧模块名（如 `llm_client.py`、`tools/search.py`），与当前代码结构不一致
 3. **对话历史无上限** — conversation_history 在内存中无限增长，无时间窗口清理
 4. **安全仅靠 Prompt** — security_gate.py 为空壳，没有代码层面的工具白名单/路径校验/注入防御
 5. **敏感信息裸露** — sensitive_sanitizer.py 为空壳，文件内容未经脱敏直接发给 LLM API
@@ -150,7 +154,6 @@ WeSeeker/
 
 | 优先级 | 模块 | 说明 |
 |--------|------|------|
-| **P0** | 切换 system_prompt_2.md | 修改 llm_router.py 中 load_system_prompt() 加载新版 prompt |
 | **P0** | tool prompt 动态加载 | 实现调用工具前新开上下文、加载对应 tool_prompt 的机制 |
 | **P0** | security_gate.py | 工具白名单校验、危险操作拦截、路径安全检查 |
 | **P0** | sensitive_sanitizer.py | 正则脱敏（API Key/密码/Token/私钥/连接串） |
@@ -174,19 +177,10 @@ WeSeeker/
 用户输入
   → Agent.process_message()
     → LLM 第一轮：system_prompt + history + tool_schemas → 意图识别 + 工具调用决策
-    → Agent._execute_tool_calls() → 执行对应工具函数
-    → LLM 第二轮：tool_result 回传 → 生成自然语言回复
-    → （如果是预览）LLM 第三轮：_summarize_content() → 内容摘要
-```
-
-### LLM 调用流程（计划改造）
-
-```
-用户输入
-  → LLM 第一轮：system_prompt_2 + history → 意图识别 + 决定调用哪个工具
-  → 新开上下文：加载对应 tool_prompt + 相关上下文 → LLM 生成精确的工具参数
-  → 执行工具
-  → LLM 结果轮：tool_result → 生成用户回复
+    → Agent._run_reasoning_loop()：最多5轮
+       - 每轮：执行工具调用 → 回填tool结果
+       - 若无tool调用或命中早停条件：结束循环
+    → （如果是预览）LLM 额外调用 _summarize_content() → 内容摘要
 ```
 
 ### file_index 机制
@@ -236,6 +230,11 @@ sender:
 | 2026-03-03 | `f1ff399` | Bug 修复 | 修复 LLM 幻觉导致文件路径错误：send_file 新增 file_index 参数，LLM 用序号引用文件而非自行拼接路径，从 candidate_files 缓存获取真实路径 |
 | 2026-03-03 | `c41945d` | 功能 | 实现文件预览总结：file_summarizer.py 支持文本类文件提取（多编码、三级深度），新增搜索结果过滤（排除 .lnk/.tmp/desktop.ini 等），Agent 集成预览工具 + LLM 摘要，补充 file_peek.md，新增 4 个测试脚本 |
 | 2026-03-04 | `e73b52b` | 功能+修复 | 多维度增强：支持本地 LLM（LM Studio/Ollama），新增 --debug 调试模式，System Prompt 新增纯文本输出约束，read_file_content 支持 file_index 防幻觉，统一工具名（file_summarizer→read_file_content） |
+| 2026-03-05 | 未提交 | 功能 | 新增 `test_iterative_tool_loop.py`：基于项目内 `system_prompt.md`/`system_prompt_2.md` 构造 4 类场景（正常多轮、重复查询早停、WARNING兜底、max_steps）验证连续工具循环 |
+| 2026-03-05 | 未提交 | 测试 | 在 `base` 环境使用 `conda run --no-capture-output -n base python test_iterative_tool_loop.py` 通过 4 个场景；WARNING 路径和 max_steps 路径均符合预期 |
+| 2026-03-05 | 未提交 | Bug 修复 | 澄清问题改为 LLM 生成；当澄清生成失败/空响应时，返回 `[WARNING] reason: detail` 前缀并拼接兜底引导文案，便于定位触发状态 |
+| 2026-03-05 | 未提交 | 功能 | 实现 Agent 最多5轮连续工具推理：新增 `_run_reasoning_loop` 循环执行、重复搜索拦截（keyword+path）、低增益/空结果早停与最小澄清追问；tool 回填改为逐调用结构化消息 |
+| 2026-03-05 | 未提交 | Prompt 重写+文档 | system_prompt_2.md 新增 `<iterative_tool_reasoning>` 规则段；更新 task_background.md（目录、已实现功能、架构流程、待实现项与本次日志）
 | 2026-03-04 | `24755be` | Prompt 重写+文档 | 新增 system_prompt_2.md（修正工具列表/参数/移除未实现功能描述），重写 file_search.md / file_peek.md / file_send.md（完整工具调用指南），重写 chat.md（6 类场景处理），新增 task_background.md（项目任务背景+维护规范） |
 
 ---

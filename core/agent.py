@@ -11,7 +11,7 @@ import re
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set, Tuple
 from core.llm_router import LLMClient, load_system_prompt
 from tools.everything_search import search_files, SEARCH_TOOL_SCHEMA, format_file_size
 from tools.file_sender import send_file, SEND_TOOL_SCHEMA
@@ -88,6 +88,11 @@ class Agent:
         # 候选文件缓存（用于用户确认发送）
         self.candidate_files: List[Dict] = []
 
+        # 自动工具推理控制
+        self.max_tool_rounds = 5
+        self.max_empty_search_streak = 2
+        self.max_low_gain_streak = 2
+
     def process_message(self, user_input: str) -> str:
         """
         处理用户消息
@@ -122,88 +127,287 @@ class Agent:
         return messages
 
     def _handle_response(self, response) -> str:
-        """处理 LLM 响应"""
-        # 检查是否有工具调用
-        tool_calls = self.llm_client.get_tool_calls(response)
+        """处理 LLM 响应（支持最多 5 轮连续工具推理）"""
+        return self._run_reasoning_loop(response)
 
-        if tool_calls:
-            # 执行工具调用
-            return self._execute_tool_calls(tool_calls)
-        else:
-            # 直接返回文本回复
-            content = self.llm_client.get_response_content(response)
-            if content:
-                # 清理 Markdown 标记（已由 system_prompt 约束，暂不需要代码清洗）
-                # content = _clean_markdown(content)
-                # 添加到历史
+    def _run_reasoning_loop(self, initial_response) -> str:
+        """多轮工具推理循环：有价值就继续，没价值就停止并追问。"""
+        response = initial_response
+        state = {
+            "step_count": 0,
+            "empty_search_streak": 0,
+            "low_gain_streak": 0,
+            "duplicate_query_hits": 0,
+        }
+        search_signatures: Set[str] = set()
+
+        while True:
+            tool_calls = self.llm_client.get_tool_calls(response)
+
+            if not tool_calls:
+                content = self.llm_client.get_response_content(response)
+                if content:
+                    if state["step_count"] > 0:
+                        content = _clean_markdown(content)
+                    self.conversation_history.append({
+                        "role": "assistant",
+                        "content": content
+                    })
+                    return content
+                return "抱歉，我没有理解你的意思，能再说一遍吗？"
+
+            if state["step_count"] >= self.max_tool_rounds:
+                stop_reply = self._generate_clarification_question("max_steps")
                 self.conversation_history.append({
                     "role": "assistant",
-                    "content": content
+                    "content": stop_reply
                 })
-                return content
-            return "抱歉，我没有理解你的意思，能再说一遍吗？"
+                return stop_reply
 
-    def _execute_tool_calls(self, tool_calls) -> str:
-        """执行工具调用"""
-        results = []
+            # 添加 assistant 的 tool_calls 消息
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    } for tc in tool_calls
+                ]
+            })
+
+            tool_messages, step_signals = self._execute_tool_calls(tool_calls, search_signatures)
+            self.conversation_history.extend(tool_messages)
+
+            state["step_count"] += 1
+            self._update_reasoning_state(state, step_signals)
+
+            stop_reason = self._should_stop_reasoning(state)
+            if stop_reason:
+                stop_reply = self._generate_clarification_question(stop_reason)
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": stop_reply
+                })
+                return stop_reply
+
+            response = self.llm_client.chat(
+                messages=self._build_messages(),
+                tools=self.tools
+            )
+
+    def _execute_tool_calls(self, tool_calls, search_signatures: Set[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """执行工具调用并返回 tool 消息与本轮信号。"""
+        tool_messages: List[Dict[str, Any]] = []
+        step_signals: List[str] = []
 
         for tool_call in tool_calls:
             function_name = tool_call.function.name
-            arguments = json.loads(tool_call.function.arguments)
+
+            try:
+                arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+            except json.JSONDecodeError:
+                arguments = {}
 
             if self.debug:
                 print(f"[调试] 调用工具: {function_name}({arguments})")
 
+            # 搜索去重：相同 keyword+path 不重复调用
+            if function_name == "search_files":
+                signature = self._build_search_signature(arguments)
+                if signature and signature in search_signatures:
+                    result = "已跳过重复搜索（同关键词+同路径）。请补充更多线索。"
+                    signal = "duplicate_query"
+                    step_signals.append(signal)
+                    tool_messages.append(self._build_tool_message(
+                        tool_call_id=tool_call.id,
+                        tool_name=function_name,
+                        ok=False,
+                        signal=signal,
+                        human_text=result,
+                    ))
+                    continue
+                if signature:
+                    search_signatures.add(signature)
+
             if function_name in self.tool_functions:
                 try:
                     result = self.tool_functions[function_name](**arguments)
-                    results.append(result)
+                    signal, ok = self._infer_tool_signal(function_name, result)
                 except Exception as e:
                     result = f"工具执行出错: {str(e)}"
-                    results.append(result)
+                    signal, ok = "tool_error", False
             else:
                 result = f"未知工具: {function_name}"
-                results.append(result)
+                signal, ok = "tool_error", False
 
-        # 将工具结果反馈给 LLM 获取最终回复
-        tool_results_message = {
+            step_signals.append(signal)
+            tool_messages.append(self._build_tool_message(
+                tool_call_id=tool_call.id,
+                tool_name=function_name,
+                ok=ok,
+                signal=signal,
+                human_text=result,
+            ))
+
+        return tool_messages, step_signals
+
+    def _build_search_signature(self, arguments: Dict[str, Any]) -> str:
+        """构建搜索签名，用于重复查询检测。"""
+        keyword = str(arguments.get("keyword", "")).strip().lower()
+        path = str(arguments.get("path", "")).strip().lower()
+        if not keyword and not path:
+            return ""
+        return f"{keyword}|{path}"
+
+    def _infer_tool_signal(self, function_name: str, result_text: str) -> Tuple[str, bool]:
+        """根据工具返回文本推断信号。"""
+        if function_name == "search_files":
+            if "搜索出错" in result_text or "工具执行出错" in result_text:
+                return "search_error", False
+            if "没有找到" in result_text:
+                return "search_empty", True
+            if self.candidate_files:
+                return "search_has_candidates", True
+            return "search_empty", True
+
+        if function_name == "read_file_content":
+            if result_text.startswith("❌") or "预览出错" in result_text:
+                return "preview_error", False
+            return "preview_success", True
+
+        if function_name == "send_file":
+            if result_text.startswith("✅"):
+                return "send_done", True
+            return "send_error", False
+
+        if "工具执行出错" in result_text or "未知工具" in result_text:
+            return "tool_error", False
+        return "tool_done", True
+
+    def _build_tool_message(self, tool_call_id: str, tool_name: str, ok: bool, signal: str, human_text: str) -> Dict[str, Any]:
+        """构建结构化 tool 消息，供下一轮 LLM 决策。"""
+        payload = {
+            "tool_name": tool_name,
+            "ok": ok,
+            "signal": signal,
+            "human_text": human_text,
+        }
+        return {
             "role": "tool",
-            "content": "\n".join(results)
+            "tool_call_id": tool_call_id,
+            "content": json.dumps(payload, ensure_ascii=False),
         }
 
-        # 添加助手消息（包含工具调用）和工具结果
-        self.conversation_history.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments
-                    }
-                } for tc in tool_calls
-            ]
-        })
-        self.conversation_history.append(tool_results_message)
+    def _update_reasoning_state(self, state: Dict[str, Any], step_signals: List[str]) -> None:
+        """更新自动推理状态。"""
+        if "search_empty" in step_signals and not self.candidate_files:
+            state["empty_search_streak"] += 1
+        elif "search_has_candidates" in step_signals:
+            state["empty_search_streak"] = 0
 
-        # 再次调用 LLM 获取最终回复
-        response = self.llm_client.chat(
-            messages=self._build_messages()
+        if "duplicate_query" in step_signals:
+            state["duplicate_query_hits"] += 1
+
+        gain_signals = {"search_has_candidates", "preview_success", "send_done"}
+        if any(signal in gain_signals for signal in step_signals):
+            state["low_gain_streak"] = 0
+        else:
+            state["low_gain_streak"] += 1
+
+    def _should_stop_reasoning(self, state: Dict[str, Any]) -> Optional[str]:
+        """是否应提前停止自动推理。"""
+        if state["empty_search_streak"] >= self.max_empty_search_streak and not self.candidate_files:
+            return "empty_search"
+
+        if state["duplicate_query_hits"] >= 1 and state["step_count"] >= 2 and not self.candidate_files:
+            return "duplicate_query"
+
+        if state["low_gain_streak"] >= self.max_low_gain_streak and not self.candidate_files:
+            return "low_gain"
+
+        return None
+
+    def _generate_clarification_question(self, reason: str) -> str:
+        """让 LLM 基于停止原因生成更灵活的澄清问题。"""
+        reason_map = {
+            "empty_search": "连续两次搜索无结果",
+            "duplicate_query": "搜索条件重复，继续调用收益很低",
+            "low_gain": "连续多轮信息增益低",
+            "max_steps": "已达到本轮自动推理上限（5轮）",
+        }
+
+        reason_text = reason_map.get(reason, "当前线索不足")
+
+        candidate_hint = ""
+        if self.candidate_files:
+            preview_items = self.candidate_files[:3]
+            lines = []
+            for idx, file_info in enumerate(preview_items, 1):
+                lines.append(f"{idx}. {file_info.get('name', '未知文件')} — 修改于 {file_info.get('modified', '未知')}")
+            candidate_hint = "\n已有候选文件（前3个）：\n" + "\n".join(lines)
+
+        prompt = f"""你是文件管家。当前自动工具推理需要暂停，请根据原因给用户一个简短、自然、可执行的澄清问题。
+
+约束：
+1. 只问 1 个最关键问题，避免连环提问
+2. 语气自然，不要机械模板
+3. 问题要能直接帮助下一步搜索（优先：文件类型 / 时间范围 / 路径范围）
+4. 如果已有候选文件，优先引导用户选序号或补充区分条件
+5. 回复控制在 1-2 句话
+
+暂停原因：{reason_text}{candidate_hint}
+
+请直接输出给用户的话："""
+
+        try:
+            response = self.llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是文件管家，擅长在信息不足时提出最小必要澄清问题。"},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            content = self.llm_client.get_response_content(response)
+            if content:
+                return _clean_markdown(content)
+        except Exception as e:
+            warning_line = f"[WARNING] {reason}: LLM_clarification_failed ({str(e)})"
+            if self.debug:
+                print(warning_line)
+            return (
+                warning_line + "\n"
+                + self._build_warning_fallback(reason)
+            )
+
+        warning_line = f"[WARNING] {reason}: LLM_clarification_empty_response"
+        if self.debug:
+            print(warning_line)
+        return (
+            warning_line + "\n"
+            + self._build_warning_fallback(reason)
         )
 
-        content = self.llm_client.get_response_content(response)
-        if content:
-            # 清理 Markdown 标记（CMD 不支持渲染）
-            content = _clean_markdown(content)
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": content
-            })
-            return content
+    def _build_warning_fallback(self, reason: str) -> str:
+        """仅在 LLM 澄清生成失败时使用的兜底文案。"""
+        if self.candidate_files:
+            return (
+                f"我先停一下，避免无效调用。当前有 {len(self.candidate_files)} 个候选，"
+                "你可以直接告诉我序号，或补充文件类型/时间范围。"
+            )
 
-        return "处理完成。"
+        if reason == "empty_search":
+            return "我连续两次都没找到结果。你可以补充一个关键信息吗：文件类型、时间范围，或大概路径（桌面/下载/文档）？"
+        if reason == "duplicate_query":
+            return "同样的搜索条件我已经试过啦。你可以补充一个新的线索吗，比如文件类型或大概修改时间？"
+        if reason == "low_gain":
+            return "继续搜索的信息增益很低。你更想按文件类型筛选，还是按时间范围筛选？"
+        if reason == "max_steps":
+            return "我先停在这里避免无效调用。你可以补充一个更具体线索（文件类型/时间/路径），我再继续精准查找。"
+        return "为了更快找到目标文件，你可以再补充一个关键信息吗？"
 
     def _execute_search(self, keyword: str, path: Optional[str] = None, max_results: int = 20) -> str:
         """执行文件搜索"""
@@ -211,6 +415,7 @@ class Agent:
             results = search_files(keyword, path, max_results)
 
             if not results:
+                self.candidate_files = []
                 return f"没有找到包含「{keyword}」的文件。试试换个关键词？"
 
             # 缓存搜索结果
