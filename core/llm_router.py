@@ -5,9 +5,9 @@ LLM 客户端封装
 """
 
 import os
-import yaml
 from openai import OpenAI
 from typing import Optional
+from core.config_loader import load_config
 
 # 本地 LLM 提供商列表
 LOCAL_PROVIDERS = ("lmstudio", "ollama")
@@ -19,22 +19,6 @@ DEFAULT_BASE_URLS = {
     "lmstudio": "http://localhost:1234/v1",
     "ollama": "http://localhost:11434/v1",
 }
-
-
-def load_config() -> dict:
-    """加载配置文件"""
-    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-
-    # 替换路径中的 {username}
-    username = os.environ.get("USERNAME", os.environ.get("USER", "user"))
-    if "paths" in config:
-        for key, value in config["paths"].items():
-            if isinstance(value, str):
-                config["paths"][key] = value.replace("{username}", username)
-
-    return config
 
 
 def _normalize_provider(provider: str) -> str:
@@ -184,7 +168,7 @@ class LLMClient:
 
 def load_system_prompt() -> str:
     """加载系统提示词"""
-    prompt_path = os.path.join(os.path.dirname(__file__), "..", "config", "prompts", "system_prompt.md")
+    prompt_path = os.path.join(os.path.dirname(__file__), "..", "config", "prompts", "system_prompt_2.md")
     if os.path.exists(prompt_path):
         with open(prompt_path, "r", encoding="utf-8") as f:
             return f.read()

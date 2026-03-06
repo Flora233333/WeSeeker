@@ -3,7 +3,6 @@ Agent 主循环
 处理用户输入 → 调用 LLM → 执行 Tool → 返回结果
 """
 
-import json
 import sys
 import os
 import re
@@ -11,8 +10,10 @@ import re
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from typing import Optional, List, Dict, Any, Set, Tuple
+from typing import Optional, List, Dict, Set, Any, Tuple
 from core.llm_router import LLMClient, load_system_prompt
+from core.reasoning_state import ReasoningState
+from core.tool_executor import ToolExecutor
 from tools.everything_search import search_files, SEARCH_TOOL_SCHEMA, format_file_size
 from tools.file_sender import send_file, SEND_TOOL_SCHEMA
 from tools.file_summarizer import read_file_content
@@ -72,7 +73,7 @@ class Agent:
     def __init__(self, debug: bool = False):
         self.llm_client = LLMClient()
         self.system_prompt = load_system_prompt()
-        self.conversation_history: List[Dict[str, str]] = []
+        self.conversation_history: List[Dict[str, Any]] = []
         self.debug = debug  # 调试模式开关
 
         # 可用工具列表
@@ -92,6 +93,11 @@ class Agent:
         self.max_tool_rounds = 5
         self.max_empty_search_streak = 2
         self.max_low_gain_streak = 2
+
+        self.tool_executor = ToolExecutor(
+            debug=self.debug,
+            has_candidates_fn=lambda: bool(self.candidate_files),
+        )
 
     def process_message(self, user_input: str) -> str:
         """
@@ -133,12 +139,7 @@ class Agent:
     def _run_reasoning_loop(self, initial_response) -> str:
         """多轮工具推理循环：有价值就继续，没价值就停止并追问。"""
         response = initial_response
-        state = {
-            "step_count": 0,
-            "empty_search_streak": 0,
-            "low_gain_streak": 0,
-            "duplicate_query_hits": 0,
-        }
+        state = ReasoningState()
         search_signatures: Set[str] = set()
 
         while True:
@@ -147,7 +148,7 @@ class Agent:
             if not tool_calls:
                 content = self.llm_client.get_response_content(response)
                 if content:
-                    if state["step_count"] > 0:
+                    if state.step_count > 0:
                         content = _clean_markdown(content)
                     self.conversation_history.append({
                         "role": "assistant",
@@ -156,7 +157,7 @@ class Agent:
                     return content
                 return "抱歉，我没有理解你的意思，能再说一遍吗？"
 
-            if state["step_count"] >= self.max_tool_rounds:
+            if state.step_count >= self.max_tool_rounds:
                 stop_reply = self._generate_clarification_question("max_steps")
                 self.conversation_history.append({
                     "role": "assistant",
@@ -180,13 +181,21 @@ class Agent:
                 ]
             })
 
-            tool_messages, step_signals = self._execute_tool_calls(tool_calls, search_signatures)
+            tool_messages, step_signals = self.tool_executor.execute_tool_calls(
+                tool_calls=tool_calls,
+                tool_functions=self.tool_functions,
+                search_signatures=search_signatures,
+            )
             self.conversation_history.extend(tool_messages)
 
-            state["step_count"] += 1
-            self._update_reasoning_state(state, step_signals)
+            state.step_count += 1
+            state.apply_step_signals(step_signals, bool(self.candidate_files))
 
-            stop_reason = self._should_stop_reasoning(state)
+            stop_reason = state.should_stop(
+                max_empty_search_streak=self.max_empty_search_streak,
+                max_low_gain_streak=self.max_low_gain_streak,
+                has_candidates=bool(self.candidate_files),
+            )
             if stop_reason:
                 stop_reply = self._generate_clarification_question(stop_reason)
                 self.conversation_history.append({
@@ -199,138 +208,6 @@ class Agent:
                 messages=self._build_messages(),
                 tools=self.tools
             )
-
-    def _execute_tool_calls(self, tool_calls, search_signatures: Set[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
-        """执行工具调用并返回 tool 消息与本轮信号。"""
-        tool_messages: List[Dict[str, Any]] = []
-        step_signals: List[str] = []
-
-        for tool_call in tool_calls:
-            function_name = tool_call.function.name
-
-            try:
-                arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
-            except json.JSONDecodeError:
-                arguments = {}
-
-            if self.debug:
-                print(f"[调试] 调用工具: {function_name}({arguments})")
-
-            # 搜索去重：相同 keyword+path 不重复调用
-            if function_name == "search_files":
-                signature = self._build_search_signature(arguments)
-                if signature and signature in search_signatures:
-                    result = "已跳过重复搜索（同关键词+同路径）。请补充更多线索。"
-                    signal = "duplicate_query"
-                    step_signals.append(signal)
-                    tool_messages.append(self._build_tool_message(
-                        tool_call_id=tool_call.id,
-                        tool_name=function_name,
-                        ok=False,
-                        signal=signal,
-                        human_text=result,
-                    ))
-                    continue
-                if signature:
-                    search_signatures.add(signature)
-
-            if function_name in self.tool_functions:
-                try:
-                    result = self.tool_functions[function_name](**arguments)
-                    signal, ok = self._infer_tool_signal(function_name, result)
-                except Exception as e:
-                    result = f"工具执行出错: {str(e)}"
-                    signal, ok = "tool_error", False
-            else:
-                result = f"未知工具: {function_name}"
-                signal, ok = "tool_error", False
-
-            step_signals.append(signal)
-            tool_messages.append(self._build_tool_message(
-                tool_call_id=tool_call.id,
-                tool_name=function_name,
-                ok=ok,
-                signal=signal,
-                human_text=result,
-            ))
-
-        return tool_messages, step_signals
-
-    def _build_search_signature(self, arguments: Dict[str, Any]) -> str:
-        """构建搜索签名，用于重复查询检测。"""
-        keyword = str(arguments.get("keyword", "")).strip().lower()
-        path = str(arguments.get("path", "")).strip().lower()
-        if not keyword and not path:
-            return ""
-        return f"{keyword}|{path}"
-
-    def _infer_tool_signal(self, function_name: str, result_text: str) -> Tuple[str, bool]:
-        """根据工具返回文本推断信号。"""
-        if function_name == "search_files":
-            if "搜索出错" in result_text or "工具执行出错" in result_text:
-                return "search_error", False
-            if "没有找到" in result_text:
-                return "search_empty", True
-            if self.candidate_files:
-                return "search_has_candidates", True
-            return "search_empty", True
-
-        if function_name == "read_file_content":
-            if result_text.startswith("❌") or "预览出错" in result_text:
-                return "preview_error", False
-            return "preview_success", True
-
-        if function_name == "send_file":
-            if result_text.startswith("✅"):
-                return "send_done", True
-            return "send_error", False
-
-        if "工具执行出错" in result_text or "未知工具" in result_text:
-            return "tool_error", False
-        return "tool_done", True
-
-    def _build_tool_message(self, tool_call_id: str, tool_name: str, ok: bool, signal: str, human_text: str) -> Dict[str, Any]:
-        """构建结构化 tool 消息，供下一轮 LLM 决策。"""
-        payload = {
-            "tool_name": tool_name,
-            "ok": ok,
-            "signal": signal,
-            "human_text": human_text,
-        }
-        return {
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "content": json.dumps(payload, ensure_ascii=False),
-        }
-
-    def _update_reasoning_state(self, state: Dict[str, Any], step_signals: List[str]) -> None:
-        """更新自动推理状态。"""
-        if "search_empty" in step_signals and not self.candidate_files:
-            state["empty_search_streak"] += 1
-        elif "search_has_candidates" in step_signals:
-            state["empty_search_streak"] = 0
-
-        if "duplicate_query" in step_signals:
-            state["duplicate_query_hits"] += 1
-
-        gain_signals = {"search_has_candidates", "preview_success", "send_done"}
-        if any(signal in gain_signals for signal in step_signals):
-            state["low_gain_streak"] = 0
-        else:
-            state["low_gain_streak"] += 1
-
-    def _should_stop_reasoning(self, state: Dict[str, Any]) -> Optional[str]:
-        """是否应提前停止自动推理。"""
-        if state["empty_search_streak"] >= self.max_empty_search_streak and not self.candidate_files:
-            return "empty_search"
-
-        if state["duplicate_query_hits"] >= 1 and state["step_count"] >= 2 and not self.candidate_files:
-            return "duplicate_query"
-
-        if state["low_gain_streak"] >= self.max_low_gain_streak and not self.candidate_files:
-            return "low_gain"
-
-        return None
 
     def _generate_clarification_question(self, reason: str) -> str:
         """让 LLM 基于停止原因生成更灵活的澄清问题。"""
@@ -442,6 +319,30 @@ class Agent:
         except Exception as e:
             return f"搜索出错: {str(e)}"
 
+    def _resolve_target_file(
+        self,
+        file_index: Optional[int],
+        file_path: Optional[str],
+        action_name: str,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        if file_index is not None:
+            if not self.candidate_files:
+                return None, f"❌ {action_name}失败: 没有可用的搜索结果，请先搜索文件"
+
+            if file_index < 1 or file_index > len(self.candidate_files):
+                return None, f"❌ {action_name}失败: 序号 {file_index} 无效，请选择 1-{len(self.candidate_files)} 之间的数字"
+
+            resolved_path = self.candidate_files[file_index - 1]["path"]
+            if self.debug:
+                debug_action = "获取读取路径" if action_name == "读取" else "获取路径"
+                print(f"[调试] 使用序号 {file_index} {debug_action}: {resolved_path}")
+            return resolved_path, None
+
+        if file_path is None:
+            return None, f"❌ {action_name}失败: 请提供 file_index（序号）或 file_path（文件路径）"
+
+        return file_path, None
+
     def _execute_send(self, file_index: Optional[int] = None, file_path: Optional[str] = None, target: Optional[str] = None) -> str:
         """
         执行文件发送
@@ -451,23 +352,13 @@ class Agent:
             file_path: 文件完整路径（备选，直接指定路径）
             target: 发送目标
         """
-        # 优先使用序号从缓存获取路径
-        if file_index is not None:
-            if not self.candidate_files:
-                return "❌ 发送失败: 没有可用的搜索结果，请先搜索文件"
+        resolved_path, error = self._resolve_target_file(file_index, file_path, action_name="发送")
+        if error:
+            return error
+        if resolved_path is None:
+            return "❌ 发送失败: 未解析到文件路径"
 
-            if file_index < 1 or file_index > len(self.candidate_files):
-                return f"❌ 发送失败: 序号 {file_index} 无效，请选择 1-{len(self.candidate_files)} 之间的数字"
-
-            file_path = self.candidate_files[file_index - 1]["path"]
-            file_name = self.candidate_files[file_index - 1]["name"]
-            if self.debug:
-                print(f"[调试] 使用序号 {file_index} 获取路径: {file_path}")
-
-        elif file_path is None:
-            return "❌ 发送失败: 请提供 file_index（序号）或 file_path（文件路径）"
-
-        result = send_file(file_path, target)
+        result = send_file(resolved_path, target)
 
         if result["success"]:
             return f"✅ 发送成功！文件「{result['file_name']}」已发送到「{result['target']}」"
@@ -484,59 +375,48 @@ class Agent:
             depth: 读取深度 L1/L2/L3
             **kwargs: 其他可选参数
         """
-        # 优先使用序号从缓存获取路径
-        if file_index is not None:
-            if not self.candidate_files:
-                return "❌ 读取失败: 没有可用的搜索结果，请先搜索文件"
-
-            if file_index < 1 or file_index > len(self.candidate_files):
-                return f"❌ 读取失败: 序号 {file_index} 无效，请选择 1-{len(self.candidate_files)} 之间的数字"
-
-            file_path = self.candidate_files[file_index - 1]["path"]
-            if self.debug:
-                print(f"[调试] 使用序号 {file_index} 获取读取路径: {file_path}")
-
-        elif file_path is None:
-            return "❌ 读取失败: 请提供 file_index（序号）或 file_path（文件路径）"
+        resolved_path, error = self._resolve_target_file(file_index, file_path, action_name="读取")
+        if error:
+            return error
+        if resolved_path is None:
+            return "❌ 读取失败: 未解析到文件路径"
 
         try:
-            # 调用 read_file_content 提取内容
-            result = read_file_content(file_path, depth=depth)
-
+            result = self._extract_preview_data(resolved_path, depth)
             if not result.get("success"):
                 return f"❌ 预览失败: {result.get('error', '未知错误')}"
-
-            file_type = result.get("file_type", "unknown")
-            content = result.get("content", "")
-            metadata = result.get("metadata", {})
-
-            # 格式化预览结果
-            preview_lines = [f"📄 文件预览: {os.path.basename(file_path)}"]
-            preview_lines.append(f"类型: {file_type}")
-
-            if metadata.get("encoding"):
-                preview_lines.append(f"编码: {metadata['encoding']}")
-
-            if metadata.get("total_chars"):
-                preview_lines.append(f"总字符数: {metadata['total_chars']}")
-
-            if metadata.get("has_more"):
-                preview_lines.append("⚠️ 文件内容较长，仅显示部分内容")
-
-            # 如果有文本内容，使用 LLM 进行总结
-            if content:
-                preview_lines.append("\n📋 内容摘要:\n")
-
-                summary = self._summarize_content(content, file_type, os.path.basename(file_path))
-                preview_lines.append(summary)
-
-                # 添加原始内容片段（供 LLM 参考）
-                preview_lines.append(f"\n📄 内容片段（前1000字符）:\n```\n{content[:1000]}\n```")
-
-            return "\n".join(preview_lines)
+            return self._render_preview_response(resolved_path, result)
 
         except Exception as e:
             return f"预览出错: {str(e)}"
+
+    def _extract_preview_data(self, file_path: str, depth: str) -> Dict[str, Any]:
+        return read_file_content(file_path, depth=depth)
+
+    def _render_preview_response(self, file_path: str, result: Dict[str, Any]) -> str:
+        file_type = result.get("file_type", "unknown")
+        content = result.get("content", "")
+        metadata = result.get("metadata", {})
+
+        preview_lines = [f"📄 文件预览: {os.path.basename(file_path)}"]
+        preview_lines.append(f"类型: {file_type}")
+
+        if metadata.get("encoding"):
+            preview_lines.append(f"编码: {metadata['encoding']}")
+
+        if metadata.get("total_chars"):
+            preview_lines.append(f"总字符数: {metadata['total_chars']}")
+
+        if metadata.get("has_more"):
+            preview_lines.append("⚠️ 文件内容较长，仅显示部分内容")
+
+        if content:
+            preview_lines.append("\n📋 内容摘要:\n")
+            summary = self._summarize_content(content, file_type, os.path.basename(file_path))
+            preview_lines.append(summary)
+            preview_lines.append(f"\n📄 内容片段（前1000字符）:\n```\n{content[:1000]}\n```")
+
+        return "\n".join(preview_lines)
 
     def _summarize_content(self, content: str, file_type: str, file_name: str) -> str:
         """

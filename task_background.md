@@ -1,7 +1,7 @@
 # WeSeeker 唯寻 — 项目任务背景
 
 > 本文件是新会话的上下文载入口，用于快速了解项目现状。请持续维护。
-> 最后更新：2026-03-05
+> 最后更新：2026-03-06
 
 ---
 
@@ -86,11 +86,14 @@ WeSeeker/
 │           ├── file_peek.md           # 预览工具 prompt（完整）
 │           └── file_send.md           # 发送工具 prompt（完整）
 ├── core/
-│   ├── agent.py                       # Agent 主循环（~530行）         ✅ 已实现（新增最多5轮连续工具推理+早停机制）
-│   ├── llm_router.py                  # LLM 客户端封装（~191行）       ✅ 已实现
-│   ├── conversation.py                # 上下文管理器                    ❌ 空壳
-│   ├── security_gate.py               # 安全指令过滤器                  ❌ 空壳
-│   └── sensitive_sanitizer.py         # 敏感信息脱敏器                  ❌ 空壳
+│   ├── agent.py                       # Agent 主循环（~462行）         ✅ 已实现（最多5轮连续工具推理+早停机制；已做可读性重构）
+│   ├── llm_router.py                  # LLM 客户端封装（~175行）       ✅ 已实现
+│   ├── config_loader.py               # 配置加载统一入口               ✅ 已实现（新增）
+│   ├── reasoning_state.py             # 推理状态对象（dataclass）      ✅ 已实现（新增）
+│   ├── tool_executor.py               # 工具执行器（信号推断/去重）    ✅ 已实现（新增）
+│   ├── conversation.py                # 上下文管理器                   ❌ 空壳
+│   ├── security_gate.py               # 安全指令过滤器                 ❌ 空壳
+│   └── sensitive_sanitizer.py         # 敏感信息脱敏器                 ❌ 空壳
 ├── tools/
 │   ├── everything_search.py           # Everything 搜索（~263行）      ✅ 已实现
 │   ├── file_sender.py                 # 文件发送（~95行）              ⚠️ Mock 实现
@@ -105,7 +108,10 @@ WeSeeker/
 │   └── models.py                      # 数据模型                        ❌ 空壳
 ├── main.py                            # CLI 入口                        ✅ 已实现
 ├── debug_llm_messages.py              # 调试脚本（追踪 LLM 消息链）
-├── test_*.py                          # 测试文件（7个，3个已失效）
+├── test_iterative_tool_loop.py        # 连续工具推理与 WARNING 兜底测试（FakeLLM）
+├── test_real_fallback_e2e.py          # 真实 LLM API 兜底触发 E2E（可注入澄清失败）
+├── test_everything_timestamp.py       # FILETIME 时间戳转换测试
+├── test_*.py                          # 其他测试脚本（3个已失效）
 ├── requirements.txt
 ├── README.md
 ├── WeSeeker-唯寻_技术大纲.md          # 技术设计文档（789行，完整蓝图）
@@ -126,6 +132,8 @@ WeSeeker/
 6. **file_index 防幻觉** — 搜索结果缓存在 Agent.candidate_files，LLM 用序号引用文件而非编造路径
 7. **LLM 二次摘要** — 文件内容提取后，额外调一次 LLM 生成口语化总结
 8. **连续工具推理** — Agent 支持最多 5 轮自动工具推理，具备重复搜索拦截、低增益早停与最小澄清追问
+9. **真实 E2E 兜底验证脚本** — 新增 `test_real_fallback_e2e.py`，复用 `Agent.process_message` + 真实 API；覆盖“正常澄清”与“仅澄清调用失败注入触发 WARNING”两条路径，含临时文件自动清理。
+10. **可维护性重构（不改功能）** — Agent 内部拆分为推理状态对象（ReasoningState）+ 工具执行器（ToolExecutor）+ 预览响应渲染小函数；`llm_router.py` 与 `everything_search.py` 统一复用 `config_loader.py`，降低嵌套与重复代码。
 
 ### 已实现但为 Mock
 
@@ -190,6 +198,12 @@ WeSeeker/
 - Agent 内部将序号转为真实路径，避免 LLM 路径幻觉
 - 这是一个经过实践验证的关键设计，解决了 LLM 在多轮对话中编造文件路径的问题
 
+### 可维护性重构（2026-03-06）
+
+- `Agent` 保持外部行为不变，仅调整内部结构：状态字典改为 `ReasoningState`，工具调用循环迁移至 `ToolExecutor`
+- 文件预览链路拆分为路径解析 / 内容提取 / 响应渲染，降低单函数职责复杂度
+- 配置加载改为单一入口 `core/config_loader.py`，`llm_router.py` 与 `everything_search.py` 复用同一实现
+
 ---
 
 ## 八、配置说明
@@ -236,6 +250,9 @@ sender:
 | 2026-03-05 | 未提交 | 功能 | 实现 Agent 最多5轮连续工具推理：新增 `_run_reasoning_loop` 循环执行、重复搜索拦截（keyword+path）、低增益/空结果早停与最小澄清追问；tool 回填改为逐调用结构化消息 |
 | 2026-03-05 | 未提交 | Prompt 重写+文档 | system_prompt_2.md 新增 `<iterative_tool_reasoning>` 规则段；更新 task_background.md（目录、已实现功能、架构流程、待实现项与本次日志）
 | 2026-03-04 | `24755be` | Prompt 重写+文档 | 新增 system_prompt_2.md（修正工具列表/参数/移除未实现功能描述），重写 file_search.md / file_peek.md / file_send.md（完整工具调用指南），重写 chat.md（6 类场景处理），新增 task_background.md（项目任务背景+维护规范） |
+| 2026-03-05 | 未提交 | 测试+文档 | 新增 `test_real_fallback_e2e.py`：真实 API 双场景 E2E（正常澄清 + 仅澄清调用故障注入触发 `[WARNING]`），脚本内临时文件自动清理；同步更新 task_background.md 的目录结构与已实现功能 |
+| 2026-03-06 | 未提交 | Bug 修复 | 修复 Everything FILETIME 时间转换：`_format_timestamp` 按 `unix = filetime / 10_000_000 - 11644473600` 转换，避免时间显示大量“未知”；新增 `test_everything_timestamp.py` 覆盖正常值/字符串输入/异常值。 |
+| 2026-03-06 | 未提交 | 重构+测试+文档 | 完成不改功能的可维护性重构：新增 `core/config_loader.py`、`core/reasoning_state.py`、`core/tool_executor.py`，拆分 `Agent` 内部预览流程并复用统一配置加载；在 `base` 环境跑通 `test_iterative_tool_loop.py`、`test_everything_timestamp.py`、`test_real_fallback_e2e.py`。 |
 
 ---
 

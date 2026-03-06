@@ -8,23 +8,7 @@ import json
 import requests
 from typing import Optional, List, Dict
 from datetime import datetime
-
-
-def load_config() -> dict:
-    """加载配置文件"""
-    import yaml
-    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-
-    # 替换路径中的 {username}
-    username = os.environ.get("USERNAME", os.environ.get("USER", "user"))
-    if "paths" in config:
-        for key, value in config["paths"].items():
-            if isinstance(value, str):
-                config["paths"][key] = value.replace("{username}", username)
-
-    return config
+from core.config_loader import load_config
 
 
 # 默认排除的文件扩展名（无意义的系统文件）
@@ -214,9 +198,18 @@ def _format_timestamp(timestamp: Optional[int]) -> str:
         return "未知"
 
     try:
-        # Everything 返回的是 Windows FILETIME (100纳秒单位，从 1601-01-01 开始)
-        # 转换为 Unix 时间戳
-        dt = datetime.fromtimestamp(timestamp)
+        # Everything 返回的是 Windows FILETIME:
+        # - 以 100 纳秒为单位
+        # - 起点是 1601-01-01 00:00:00 UTC
+        # Unix 时间戳起点是 1970-01-01 00:00:00 UTC
+        # 转换公式: unix = filetime / 10_000_000 - 11644473600
+        if isinstance(timestamp, str):
+            timestamp = int(timestamp)
+        elif not isinstance(timestamp, int):
+            timestamp = int(timestamp)
+
+        unix_ts = timestamp / 10_000_000 - 11644473600
+        dt = datetime.fromtimestamp(unix_ts)
         return dt.strftime("%Y-%m-%d %H:%M")
     except:
         return "未知"
