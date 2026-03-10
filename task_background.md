@@ -184,7 +184,7 @@ WeSeeker/
 
 ## 五、已知问题与待修复项
 
-1. **文档与实现仍有局部不一致** — 部分说明文档曾使用旧文件路径；当前已同步核心文档，但其他散落文档仍需持续核对 `doc/`、`test/` 等新目录引用
+1. **文档与实现仍有局部不一致** — 核心文档已同步到当前目录结构，但被 `.gitignore` 排除的 `doc/`、`test/` 目录内说明仍以本地维护为主，后续如调整结构需继续手动核对引用
 2. **对话历史无上限** — conversation_history 在内存中无限增长，无时间窗口清理
 3. **安全仅靠 Prompt** — security_gate.py 为空壳，没有代码层面的工具白名单/路径校验/注入防御
 4. **敏感信息裸露** — sensitive_sanitizer.py 为空壳，文件内容未经脱敏直接发给 LLM API
@@ -288,6 +288,8 @@ sender:
 | 2026-03-09 | 未提交 | 重构+功能+测试+Prompt+文档 | `PauseEvent` 新增 `default_fallback_msg`，澄清失败/空响应兜底文案完全迁入 `core/entities.py`，删除 `Agent._build_warning_fallback()`，并改为直接向用户返回 fallback 文案、不暴露 `[WARNING]` 前缀；收紧 `system_prompt_2.md` 的自动搜索规则，要求第一次 `search_files` 无结果就引导用户补充线索，并补充“文件夹 → 子文件夹 → 目标文件”的连续推进示例；新增基于 Everything `parent:"绝对路径"` 的 `list_folder_contents` 工具，支持列出文件夹直属子项并复用 `candidate_files`，且为避免模型误填相对路径，当前强制先 `search_files` 再用 `folder_index` 展开；补充 `test/test_list_folder_contents.py`，在 `base` 环境跑通 `python -m test.test_list_folder_contents` 与 `python -m test.test_iterative_tool_loop`。 |
 | 2026-03-10 | 未提交 | 测试+Prompt+文档+重构 | 新增 `test/test_search_combinations.py`，用于人工观察 Everything 在多词组合关键词与不同路径约束下的实际返回结果；并在 Prompt 与搜索/文件夹结果文案中补充“序号只对应最近一组结果”的提示，降低旧序号误用风险；同时将文件内容总结的 Prompt 组装从 `core/agent.py` 下沉到 `tools/file_summarizer.py`，由工具模块统一维护摘要提示模板；进一步收紧文件夹连续推进规则，要求只有在搜索结果对目标文件夹是唯一且高置信度命中时才允许继续展开；并补充“读取文件内容需要用户显式同意，单纯确认序号不等于允许预览”的 Prompt 约束；同步更新 `task_background.md`。 |
 | 2026-03-10 | 未提交 | 文档 | 按当前实际目录重写 `README.md`、`AGENTS.md`、`task_background.md`、`WeSeeker-唯寻_技术大纲.md` 的结构说明，统一 `doc/`、`test/`、`test/debug_llm_messages.py`、`doc/tool_class_refactor*.md` 等新路径，并为主要文件/文件夹补充用途描述。 |
+| 2026-03-10 | `134a01e` | 功能+重构+Prompt+文档+配置 | 收口 Agent 推理框架并增强文件夹检索链路：新增 `list_folder_contents`、`core/entities.py` 与统一工具/事件配置，补强空响应兜底、失败回滚、非法参数处理、`<think>` 清理与摘要 Prompt 下沉；同时同步更新 `README.md`、`AGENTS.md`、`task_background.md`、技术大纲与 `.gitignore`，明确当前目录结构、预览授权边界、候选序号作用域以及 `doc/` / `test/` 的版本控制范围。 |
+| 2026-03-10 | 未提交 | 配置+清理 | 移除仓库根目录旧版测试/调试脚本的 git 跟踪，仅保留本地 `test/` 目录中的对应脚本；当前工作区待记录删除 `debug_llm_messages.py`、`test_agent.py`、`test_filter.py`、`test_full_workflow.py`、`test_iterative_tool_loop.py`、`test_local_llm.py`、`test_preview.py`、`test_preview_full.py`、`test_search.py`。 |
 
 ---
 
