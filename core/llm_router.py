@@ -5,6 +5,8 @@ LLM 客户端封装
 """
 
 import os
+import re
+from typing import Any
 from openai import OpenAI
 from typing import Optional
 from core.config_loader import load_config
@@ -39,6 +41,14 @@ def _normalize_provider(provider: str) -> str:
 
     # 其他所有值都当作云端处理
     return "cloud"
+
+
+def _strip_think_blocks(text: str) -> str:
+    if not text:
+        return text
+
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned.strip()
 
 
 class LLMClient:
@@ -95,7 +105,15 @@ class LLMClient:
             base_url=base_url,
             timeout=timeout
         )
-        self.model = llm_config.get("model", "qwen-plus")
+
+        # 获取模型名称：云端必须配置，本地可选
+        model = llm_config.get("model", "")
+        if self.provider not in LOCAL_PROVIDERS and not model:
+            raise ValueError(
+                "配置错误：云端 LLM 必须在 settings.yaml 中设置 llm.model\n"
+                "例如：qwen3.5-plus, gpt-4, deepseek-chat 等"
+            )
+        self.model = model
 
         # 打印当前使用的提供商（调试用）
         print(f"[LLM] 使用提供商: {self.provider}, 模型: {self.model}")
@@ -107,7 +125,7 @@ class LLMClient:
         messages: list,
         tools: Optional[list] = None,
         tool_choice: str = "auto"
-    ) -> dict:
+    ) -> Any:
         """
         发送聊天请求
 
@@ -135,7 +153,7 @@ class LLMClient:
                 del kwargs["tool_choice"]
 
         try:
-            response = self.client.chat.completions.create(**kwargs)
+            response = self.client.chat.completions.create(**kwargs) # 这一步同时做了构造消息+发送，response就是LLM返回的消息，包括模型返回的文本内容，tool call，以及一些元信息
             return response
         except Exception as e:
             # 添加更友好的错误提示
@@ -147,14 +165,16 @@ class LLMClient:
                     f"2. API 地址是否正确 (当前: {self.client.base_url})\n"
                     f"3. 模型是否已加载"
                 ) from e
-            raise
+            raise # 这里两个raise是先试着调用接口。
+                  # 如果报错了，并且像是本地模型连不上如"and "connection" in str(e)"，那我就换一句人能看懂的话报出来。
+                  # 否则我不乱改，直接把原始错误继续抛出去
 
     def get_response_content(self, response) -> Optional[str]:
         """获取响应文本内容"""
         if response.choices and len(response.choices) > 0:
             message = response.choices[0].message
             if message.content:
-                return message.content
+                return _strip_think_blocks(message.content)
         return None
 
     def get_tool_calls(self, response) -> Optional[list]:

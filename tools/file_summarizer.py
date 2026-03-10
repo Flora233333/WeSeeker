@@ -2,8 +2,8 @@
 文件内容摘要
 支持 PPT/PDF/Excel/Word/文本等多格式内容提取
 
-注意：本模块只做本地内容提取，不直接调用 LLM。
-LLM 总结由调用方（Agent）负责。
+注意：本模块只做本地内容提取与总结 Prompt 组装，不直接调用 LLM。
+LLM 调用仍由调用方（Agent）负责。
 """
 
 import os
@@ -19,6 +19,55 @@ WORD_EXTENSIONS = {'.docx'}
 EXCEL_EXTENSIONS = {'.xlsx', '.xls'}
 PPT_EXTENSIONS = {'.pptx'}
 PDF_EXTENSIONS = {'.pdf'}
+
+
+def get_summary_system_prompt() -> str:
+    return (
+        "你是文件管家助手，用户让你预览一个文件。"
+        "你的总结目标是：让用户不打开文件也能快速判断这是不是自己要找的那个文件。"
+        "语气简洁自然，像管家在口头汇报，不要用'本文档''综上所述'等书面套话。"
+        "纯文本输出，不要使用 Markdown 格式标记。"
+    )
+
+
+def build_summary_prompt(content: str, file_type: str, file_name: str) -> str:
+    file_type_desc = {
+        'text': '文本文件',
+        'word': 'Word 文档',
+        'excel': 'Excel 表格',
+        'ppt': 'PPT 演示文稿',
+        'pdf': 'PDF 文档'
+    }.get(file_type, '文件')
+
+    # 根据文件类型给出差异化的总结侧重点
+    type_hint = {
+        'text': '关注文本的主题和关键信息。如果是代码或配置文件，说明其功能和用途。',
+        'word': '关注文档的主题、结构大纲和核心结论。如果有标题层级，体现文档的组织结构。',
+        'excel': '关注表格的数据主题、包含哪些字段/维度、数据量级和关键数值。',
+        'ppt': '关注演示文稿的主题、核心观点和逻辑线索。',
+        'pdf': '关注文档的主题、核心内容和关键结论。',
+    }.get(file_type, '关注文件的主要内容和用途。')
+
+    max_content_chars = 3000
+    is_truncated = len(content) > max_content_chars
+    display_content = content[:max_content_chars]
+
+    truncation_notice = (
+        "\n（注意：以上为文件的前半部分内容，后续已截断。请基于可见部分总结，不要猜测未展示的内容。）"
+        if is_truncated else ""
+    )
+
+    return f"""请对以下{file_type_desc}「{file_name}」进行总结。
+            总结要求：
+            - 先用一句话概括这个文件是什么、关于什么主题
+            - 再用 1-3 句话提炼关键内容
+            - {type_hint}
+            - 总结控制在 200-300 字以内
+            文件内容：
+            ---
+            {display_content}
+            ---{truncation_notice}
+            总结："""
 
 
 def detect_file_type(file_path: str) -> str:
@@ -193,15 +242,6 @@ def _extract_text(file_path: str, max_chars: int) -> Dict[str, Any]:
         if is_truncated:
             content = content[:max_chars]
 
-        # 获取文件统计信息
-        total_chars = 0
-        try:
-            with open(file_path, 'r', encoding=used_encoding, errors='ignore') as f:
-                full_content = f.read()
-                total_chars = len(full_content)
-        except:
-            pass
-
         return {
             "success": True,
             "file_type": "text",
@@ -209,9 +249,9 @@ def _extract_text(file_path: str, max_chars: int) -> Dict[str, Any]:
             "content": content,
             "images": None,
             "metadata": {
-                "total_chars": total_chars,
+                "preview_chars": len(content),
                 "has_more": is_truncated,
-                "encoding": used_encoding
+                "encoding": used_encoding,
             },
             "estimated_tokens": _estimate_tokens(content),
             "error": None
@@ -340,15 +380,41 @@ def _extract_metadata_only(file_path: str) -> Dict[str, Any]:
 
 
 # ============== Tool Schema（供 LLM function calling 使用） ==============
-# 注意：实际的 Agent 现在使用 core/agent.py 中定义的 PREVIEW_TOOL_SCHEMA
-# 该 schema 支持 file_index 优先从缓存获取路径，避免 LLM 路径幻觉
-# 此处保留旧版 schema 用于向后兼容和独立模块使用
 
 PREVIEW_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "read_file_content",
-        "description": "[DEPRECATED - 使用 agent.py 中的 schema] 读取文件内容。支持文本文件(.txt/.md/.py/.json等)，Word/Excel/PPT/PDF暂不支持。深度L1=快速预览(约2000字)，L2=详细(约8000字)，L3=完整(需确认)。",
+        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)，Word/Excel/PPT/PDF暂不支持。优先使用 file_index 从搜索结果中选择，避免路径错误。深度L1=快速预览(约2000字)，L2=详细(约8000字)，L3=完整(需确认)。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_index": {
+                    "type": "integer",
+                    "description": "文件序号（推荐），从搜索结果列表中选择，如 1、2、3 等。优先使用此参数！"
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "文件完整路径（备选），仅在没有搜索结果或读取未搜索的文件时使用"
+                },
+                "depth": {
+                    "type": "string",
+                    "description": "预览深度: L1(默认快速预览)/L2(详细)/L3(完整)",
+                    "enum": ["L1", "L2", "L3"],
+                    "default": "L1"
+                }
+            },
+            "required": []
+        }
+    }
+}
+
+
+PREVIEW_TOOL_SCHEMA_FOR_DEBUG = {
+    "type": "function",
+    "function": {
+        "name": "read_file_content",
+        "description": "[FOR_DEBUG] 读取文件内容。仅要求 file_path，适合独立脚本或脱离 Agent 候选文件上下文的调试场景。",
         "parameters": {
             "type": "object",
             "properties": {

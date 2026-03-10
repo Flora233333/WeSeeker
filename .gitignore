@@ -56,6 +56,10 @@ config/secrets.yaml
 .coverage
 htmlcov/
 .tox/
+test/
+
+# Local docs
+doc/
 
 # Jupyter
 .ipynb_checkpoints/

@@ -6,7 +6,6 @@ WeSeeker MVP - 命令行入口
 """
 
 import sys
-import os
 import io
 
 # 设置标准输出编码为 UTF-8（解决 Windows 控制台中文显示问题）
@@ -14,10 +13,7 @@ if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-# 添加项目根目录到 Python 路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from WeSeeker.core.agent import Agent
+from core.agent import Agent
 
 
 def print_welcome():

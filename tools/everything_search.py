@@ -38,6 +38,7 @@ EXCLUDED_PREFIXES = (
     '~$',            # Office 临时文件
     '.~',            # 某些编辑器临时文件
     '._',            # macOS 资源分支文件
+    '$',
 )
 
 
@@ -238,15 +239,31 @@ SEARCH_TOOL_SCHEMA = {
             "properties": {
                 "keyword": {
                     "type": "string",
-                    "description": "搜索关键词，可以是文件名的部分内容"
+                    "description": (
+                        "搜索关键词，可以是文件名的部分内容。"
+                        "Everything 搜索规则：空格表示 AND（同时包含多个词），"
+                        "例如 '项目 pptx' 会匹配文件名(带后缀)中同时含'项目'与'pptx'的文件。"
+                        "关键词应只包含文件名中可能真实出现的词，"
+                        "必须去掉自然语言修饰词（如'的''了''上周的''那个''帮我找'）。"
+                        "当用户提到文件类型时，转换为真实扩展名："
+                        "PPT → pptx, Word/文档 → docx, Excel/表格 → xlsx, PDF → pdf。"
+                        "例如用户说'项目PPT' → keyword='项目 pptx'。"
+                        "如果用户提到的是一个完整的文件夹名（如'2026文档'），"
+                        "将其作为完整关键词传入，不要拆分到 path 参数中。"
+                    )
                 },
                 "path": {
                     "type": "string",
-                    "description": "搜索路径约束（可选）。可以是 'desktop'/'桌面', 'downloads'/'下载', 'documents'/'文档'，或具体路径"
+                    "description": (
+                        "搜索路径约束（可选）非必需参数。"
+                        "仅在用户明确指向系统预设目录时使用：'desktop'/'桌面', 'downloads'/'下载', 'documents'/'文档'，或用户给出的具体磁盘路径（如 'D:\\工作'）。"
+                        "注意：当用户说'在XX里'而XX是一个自建文件夹名（如'2026文档''项目资料'）时，"
+                        "不要填写 path，应将该文件夹名放入 keyword 中搜索。"
+                    )
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "最大返回结果数，默认 20",
+                    "description": "最大返回结果数，默认 20，不要超过 50",
                     "default": 20
                 }
             },

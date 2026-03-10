@@ -65,37 +65,56 @@ WeSeeker 唯寻 是一个运行在 Windows PC 端的智能文件管理 Agent，�
 ```
 WeSeeker/
 ├── config/
-│   ├── settings.yaml            # 全局配置（API key等）
-│   ├── prompts/
-│       ├── system_prompt.md     # 基础系统 prompt
-│       ├── chat.md              # 闲聊 prompt
+│   ├── settings.yaml                # 全局配置（LLM / Everything / 路径映射 / 发送目标）
+│   └── prompts/
+│       ├── system_prompt.md         # 旧版系统 prompt（保留参考）
+│       ├── system_prompt_2.md       # 当前主用系统 prompt
+│       ├── chat.md                  # 闲聊 prompt
 │       └── tool_prompts/
-│       	├── ile_search.md   # 文件搜索 prompt
-│       	├── file_peek.md    # 文件预览 prompt
-│       	└── file_send.md    # 文件确认与发送 prompt
+│           ├── file_search.md       # 文件搜索工具 prompt
+│           ├── file_peek.md         # 文件预览工具 prompt
+│           └── file_send.md         # 文件确认与发送 prompt
 ├── core/
-│   ├── agent.py                 # Agent 主循环 & 调度
-│   ├── conversation.py          # 上下文管理器 & 状态机
-│   ├── llm_router.py            # LLM 调用封装 & function calling
-│   ├── security_gate.py         # 安全指令过滤器
-│   └── sensitive_sanitizer.py   # 敏感文件预筛 & 本地脱敏器
-│
+│   ├── agent.py                     # Agent 主循环、消息编排、工具调度
+│   ├── config_loader.py             # 配置加载统一入口
+│   ├── conversation.py              # 上下文管理器 & 状态机（预留）
+│   ├── entities.py                  # ToolSpec / ErrorEvent / PauseEvent 等实体定义
+│   ├── llm_router.py                # LLM 调用封装 & function calling
+│   ├── reasoning_state.py           # 推理状态对象
+│   ├── security_gate.py             # 安全指令过滤器（预留）
+│   ├── sensitive_sanitizer.py       # 敏感文件预筛 & 本地脱敏器（预留）
+│   └── tool_executor.py             # 工具执行循环、信号推断与去重
 ├── tools/
-│   ├── everything_search.py     # Everything SDK 封装
-│   ├── file_inspector.py        # 文件元信息读取
-│   ├── file_summarizer.py       # 文件内容摘要
-│   ├── file_sender.py           # 消息 & 文件发送
-│   └── path_resolver.py         # 路径智能解析（如"桌面"→实际路径）
-│
+│   ├── everything_search.py         # Everything HTTP API 封装
+│   ├── file_inspector.py            # 文件元信息读取（预留）
+│   ├── file_summarizer.py           # 文件内容提取与摘要辅助
+│   ├── file_sender.py               # 消息 & 文件发送（当前为 Mock）
+│   ├── folder_lister.py             # 文件夹直属内容列举
+│   └── path_resolver.py             # 路径智能解析（如“桌面”→实际路径，预留）
+├── doc/
+│   ├── terminal_trace_design.md     # 终端追踪初版设计
+│   ├── terminal_trace_design_v2.md  # 终端追踪分阶段实施版
+│   ├── tool_class_refactor.md       # Tool 类重构说明（英文）
+│   ├── tool_class_refactor_plan_zh.md # Tool 类重构计划（中文）
+│   └── 候选列表序号歧义问题说明.md  # 候选列表序号作用域说明
 ├── listeners/
-│   ├── wechat_listener.py       # 消息监听主循环
-│   └── message_parser.py        # 消息预处理
-│
+│   ├── wechat_listener.py           # 消息监听主循环（预留）
+│   └── message_parser.py            # 消息预处理（预留）
 ├── storage/
-│   ├── db.py                    # SQLite 会话持久化
-│   └── models.py                # 数据模型
-│
-└── main.py                      # 入口
+│   ├── db.py                        # SQLite 会话持久化（预留）
+│   └── models.py                    # 数据模型（预留）
+├── test/
+│   ├── test_iterative_tool_loop.py  # 连续工具推理测试
+│   ├── test_real_fallback_e2e.py    # 真实 API 兜底链路测试
+│   ├── test_list_folder_contents.py # 文件夹展开测试
+│   ├── test_empty_response_event.py # 空响应事件测试
+│   ├── test_search_combinations.py  # 组合关键词搜索观察脚本
+│   └── debug_llm_messages.py        # LLM 消息链调试脚本
+├── README.md                        # 快速上手说明
+├── AGENTS.md                        # 代理开发指南
+├── task_background.md               # 项目背景、进度与更新日志
+├── WeSeeker-唯寻_技术大纲.md        # 完整技术设计文档
+└── main.py                          # CLI 入口
 ```
 
 ### 3.2 各个模式以及工具详细设计

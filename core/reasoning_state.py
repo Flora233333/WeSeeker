@@ -18,7 +18,9 @@ class ReasoningState:
         if "duplicate_query" in step_signals:
             self.duplicate_query_hits += 1
 
-        gain_signals = {"search_has_candidates", "preview_success", "send_done"}
+        gain_signals = {"search_has_candidates", "list_has_candidates", "preview_success", "send_done"}
+        # 只要这一轮里出现过任意一个“有增益”的 signal
+        # 就认为这一轮是有推进的
         if any(signal in gain_signals for signal in step_signals):
             self.low_gain_streak = 0
         else:

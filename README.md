@@ -25,23 +25,56 @@
 
 ```text
 WeSeeker/
-├── config/
-│   ├── settings.yaml
-│   └── prompts/
-│       ├── system_prompt.md
-│       ├── system_prompt_2.md
-│       ├── chat.md
-│       └── tool_prompts/
-├── core/
-│   ├── agent.py
-│   └── llm_router.py
-├── tools/
-│   ├── everything_search.py
-│   ├── file_summarizer.py
-│   └── file_sender.py
-├── main.py
-├── test_iterative_tool_loop.py
-└── task_background.md
+├── config/                              # 配置与 Prompt 目录
+│   ├── settings.yaml                    # 全局配置（LLM / Everything / 路径 / 发送目标）
+│   └── prompts/                         # 系统 Prompt、闲聊 Prompt、工具 Prompt
+│       ├── system_prompt.md             # 旧版系统提示词（保留参考）
+│       ├── system_prompt_2.md           # 当前主用系统提示词
+│       ├── chat.md                      # 闲聊模式 Prompt
+│       └── tool_prompts/                # 各工具的补充提示词
+│           ├── file_search.md           # 搜索工具 Prompt
+│           ├── file_peek.md             # 预览工具 Prompt
+│           └── file_send.md             # 发送工具 Prompt
+├── core/                                # Agent 核心编排层
+│   ├── agent.py                         # 主循环、消息编排、工具调度入口
+│   ├── config_loader.py                 # 配置加载统一入口
+│   ├── conversation.py                  # 对话上下文管理（当前为空壳）
+│   ├── entities.py                      # ToolSpec / ErrorEvent / PauseEvent 等轻量实体
+│   ├── llm_router.py                    # LLM 客户端封装
+│   ├── reasoning_state.py               # 推理状态对象
+│   ├── security_gate.py                 # 安全校验入口（当前为空壳）
+│   ├── sensitive_sanitizer.py           # 敏感信息脱敏入口（当前为空壳）
+│   └── tool_executor.py                 # 工具执行循环与去重逻辑
+├── tools/                               # 具体工具实现
+│   ├── everything_search.py             # Everything HTTP API 搜索
+│   ├── file_inspector.py                # 文件元信息读取（当前为空壳）
+│   ├── file_sender.py                   # 文件发送（当前为 Mock）
+│   ├── file_summarizer.py               # 文件内容提取与摘要辅助
+│   ├── folder_lister.py                 # 文件夹直属内容列举
+│   └── path_resolver.py                 # 路径智能解析（当前为空壳）
+├── listeners/                           # 消息监听预留层（当前为空壳）
+│   ├── wechat_listener.py               # 微信监听入口
+│   └── message_parser.py                # 消息预处理
+├── storage/                             # 持久化预留层（当前为空壳）
+│   ├── db.py                            # SQLite 接口预留
+│   └── models.py                        # 数据模型预留
+├── doc/                                 # 补充设计与专项说明文档
+│   ├── terminal_trace_design.md         # 终端追踪初版设计
+│   ├── terminal_trace_design_v2.md      # 终端追踪分阶段实施版
+│   ├── tool_class_refactor.md           # Tool 类重构说明（英文）
+│   ├── tool_class_refactor_plan_zh.md   # Tool 类重构计划（中文）
+│   └── 候选列表序号歧义问题说明.md      # 候选列表序号作用域问题说明
+├── test/                                # 测试与调试脚本
+│   ├── test_iterative_tool_loop.py      # 连续工具推理测试
+│   ├── test_real_fallback_e2e.py        # 真实 API 兜底链路测试
+│   ├── test_list_folder_contents.py     # 文件夹展开测试
+│   ├── test_empty_response_event.py     # 空响应事件测试
+│   └── debug_llm_messages.py            # LLM 消息链调试脚本
+├── main.py                              # CLI 入口
+├── README.md                            # 项目快速说明
+├── AGENTS.md                            # 开发代理工作指南
+├── task_background.md                   # 项目背景、进度与日志
+└── WeSeeker-唯寻_技术大纲.md            # 完整技术设计蓝图
 ```
 
 > 完整设计与阶段性状态请参考：`task_background.md`、`WeSeeker-唯寻_技术大纲.md`
@@ -106,7 +139,7 @@ python main.py --debug
 连续工具推理测试：
 
 ```bash
-conda run --no-capture-output -n base python test_iterative_tool_loop.py
+conda run --no-capture-output -n base python -m test.test_iterative_tool_loop
 ```
 
 ## 已实现 / 未实现

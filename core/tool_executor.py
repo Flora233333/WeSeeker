@@ -1,4 +1,5 @@
 import json
+import warnings
 from typing import Any, Callable, Dict, List, Set, Tuple
 
 
@@ -7,12 +8,30 @@ class ToolExecutor:
         self.debug = debug
         self.has_candidates_fn = has_candidates_fn
 
+    def _preview_result_text(self, text: str, max_chars: int = 800) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars] + "\n... [truncated]"
+
+    def _print_raw_tool_result(self, tool_name: str, signal: str, ok: bool, result: str) -> None:
+        if not self.debug:
+            return
+
+        print("\n---------------- Raw Tool Result ----------------")
+        print(f"tool: {tool_name}")
+        print(f"signal: {signal}")
+        print(f"ok: {str(ok).lower()}") # 工具执行成功与失败
+        print("result:")
+        print(self._preview_result_text(result))
+        print("--------------------------------------------------")
+
     def execute_tool_calls(
-        self,
-        tool_calls: list,
-        tool_functions: Dict[str, Callable[..., str]],
-        search_signatures: Set[str],
-    ) -> Tuple[List[Dict[str, Any]], List[str]]:
+            self,
+            tool_calls: list,
+            tool_functions: Dict[str, Callable[..., str]],
+            search_signatures: Set[str],
+        ) -> Tuple[List[Dict[str, Any]], List[str]]:
+        
         tool_messages: List[Dict[str, Any]] = []
         step_signals: List[str] = []
 
@@ -22,7 +41,23 @@ class ToolExecutor:
             try:
                 arguments = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
             except json.JSONDecodeError:
-                arguments = {}
+                signal = "invalid_tool_arguments"
+                result = f"工具参数不是合法 JSON：{tool_call.function.arguments}"
+                step_signals.append(signal)
+                self._print_raw_tool_result(function_name, signal, False, result)
+                tool_messages.append(
+                    self._build_tool_message(
+                        tool_call_id=tool_call.id,
+                        tool_name=function_name,
+                        ok=False,
+                        signal=signal,
+                        human_text=result,
+                    )
+                )
+                if self.debug:
+                    debug_message = f"[调试] 跳过工具 {function_name}：参数 JSON 非法"
+                    warnings.warn(debug_message, RuntimeWarning)
+                continue
 
             if self.debug:
                 print(f"[调试] 调用工具: {function_name}({arguments})")
@@ -33,6 +68,7 @@ class ToolExecutor:
                     result = "已跳过重复搜索（同关键词+同路径）。请补充更多线索。"
                     signal = "duplicate_query"
                     step_signals.append(signal)
+                    self._print_raw_tool_result(function_name, signal, False, result)
                     tool_messages.append(
                         self._build_tool_message(
                             tool_call_id=tool_call.id,
@@ -44,7 +80,7 @@ class ToolExecutor:
                     )
                     continue
                 if signature:
-                    search_signatures.add(signature)
+                    search_signatures.add(signature) # 会影响到Agent.py文件的search_signatures的变化，是同一个对象
 
             if function_name in tool_functions:
                 try:
@@ -56,6 +92,8 @@ class ToolExecutor:
             else:
                 result = f"未知工具: {function_name}"
                 signal, ok = "tool_error", False
+
+            self._print_raw_tool_result(function_name, signal, ok, result)
 
             step_signals.append(signal)
             tool_messages.append(
@@ -74,6 +112,8 @@ class ToolExecutor:
         keyword = str(arguments.get("keyword", "")).strip().lower()
         path = str(arguments.get("path", "")).strip().lower()
         if not keyword and not path:
+            warnings.warn("[调试] search_files 缺少 keyword 和 path，无法生成去重签名",
+                            RuntimeWarning)
             return ""
         return f"{keyword}|{path}"
 
@@ -91,6 +131,15 @@ class ToolExecutor:
             if result_text.startswith("❌") or "预览出错" in result_text:
                 return "preview_error", False
             return "preview_success", True
+
+        if function_name == "list_folder_contents":
+            if result_text.startswith("❌") or "打开文件夹出错" in result_text:
+                return "list_error", False
+            if "是空的" in result_text:
+                return "list_empty", True
+            if self.has_candidates_fn():
+                return "list_has_candidates", True
+            return "list_empty", True
 
         if function_name == "send_file":
             if result_text.startswith("✅"):
