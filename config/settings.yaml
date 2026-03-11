@@ -30,6 +30,12 @@ llm:
     timeout: 60
     # 温度参数（控制生成随机性，0-1之间）
     temperature: 0.3
+    # 多模态图片输入缩放上限（最长边，等比例缩放，不会拉伸画面）
+    multimodal:
+      image_max_edge:
+        image: 2048   # 普通照片/截图
+        pdf: 3072     # PDF 页面截图，优先保留文字可读性
+        ppt: 3072     # PPT 页面截图，优先保留文字可读性
 
 everything:
   host: "127.0.0.1"

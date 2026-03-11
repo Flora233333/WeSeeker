@@ -23,6 +23,7 @@ from tools.file_summarizer import (
     read_file_content,
     PREVIEW_TOOL_SCHEMA,
     build_summary_prompt,
+    build_image_summary_prompt,
     get_summary_system_prompt,
 )
 
@@ -493,6 +494,7 @@ class Agent:
     def _render_preview_response(self, file_path: str, result: Dict[str, Any]) -> str:
         file_type = result.get("file_type", "unknown")
         content = result.get("content", "")
+        images = result.get("images") or []
         metadata = result.get("metadata", {})
 
         preview_lines = [f"📄 文件预览: {os.path.basename(file_path)}"]
@@ -512,6 +514,10 @@ class Agent:
             summary = self._summarize_content(content, file_type, os.path.basename(file_path))
             preview_lines.append(summary)
             preview_lines.append(f"\n📄 内容片段（前1000字符）:\n```\n{content[:1000]}\n```")
+        elif images:
+            preview_lines.append("\n🖼️ 图片摘要:\n")
+            summary = self._summarize_images(images, file_type, os.path.basename(file_path), metadata)
+            preview_lines.append(summary)
 
         return "\n".join(preview_lines)
 
@@ -534,6 +540,24 @@ class Agent:
 
         except Exception as e:
             return f"总结生成失败: {str(e)}"
+
+    def _summarize_images(self, image_paths: List[str], file_type: str, file_name: str, metadata: Dict[str, Any]) -> str:
+        """使用多模态 LLM 对图片内容进行总结。"""
+        try:
+            prompt = build_image_summary_prompt(file_type, file_name, metadata)
+
+            response = self.llm_client.chat(
+                messages=[
+                    {"role": "system", "content": get_summary_system_prompt()},
+                    self.llm_client.build_multimodal_user_message(prompt, image_paths, file_type=file_type),
+                ]
+            )
+
+            summary = self.llm_client.get_response_content(response)
+            return summary if summary else "无法生成图片总结"
+
+        except Exception as e:
+            return f"图片总结生成失败: {str(e)}"
 
     def clear_history(self):
         """清空对话历史"""

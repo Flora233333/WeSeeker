@@ -6,9 +6,13 @@ LLM 客户端封装
 
 import os
 import re
-from typing import Any
+import base64
+import io
+import mimetypes
+from typing import Any, List, Tuple
 from openai import OpenAI
 from typing import Optional
+from PIL import Image, ImageOps
 from core.config_loader import load_config
 
 # 本地 LLM 提供商列表
@@ -20,6 +24,12 @@ DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "lmstudio": "http://localhost:1234/v1",
     "ollama": "http://localhost:11434/v1",
+}
+
+DEFAULT_MULTIMODAL_IMAGE_EDGES = {
+    "image": 2048,
+    "pdf": 3072,
+    "ppt": 3072,
 }
 
 
@@ -184,6 +194,84 @@ class LLMClient:
             if hasattr(message, "tool_calls") and message.tool_calls:
                 return message.tool_calls
         return None
+
+    def _get_multimodal_image_edge(self, file_type: str = "image") -> int:
+        multimodal_config = self.config.get("llm", {}).get("local", {}).get("multimodal", {})
+        image_max_edge = multimodal_config.get("image_max_edge", {})
+
+        configured_value = image_max_edge.get(file_type)
+        if isinstance(configured_value, int) and configured_value > 0:
+            return configured_value
+
+        return DEFAULT_MULTIMODAL_IMAGE_EDGES.get(file_type, DEFAULT_MULTIMODAL_IMAGE_EDGES["image"])
+
+    def encode_image_to_data_url(self, image_path: str, file_type: str = "image") -> str:
+        """将本地图片标准化后编码为 data URL，供多模态模型使用。"""
+        mime_type, image_bytes = self._prepare_image_payload(
+            image_path,
+            max_edge=self._get_multimodal_image_edge(file_type),
+        )
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+
+        return f"data:{mime_type};base64,{encoded}"
+
+    def _prepare_image_payload(self, image_path: str, max_edge: int) -> Tuple[str, bytes]:
+        """将本地图片转为模型更容易处理的标准单帧图片，并在必要时等比例缩放。"""
+        with Image.open(image_path) as image:
+            source_format = (image.format or "").upper()
+            image = ImageOps.exif_transpose(image)
+
+            if getattr(image, "is_animated", False):
+                image.seek(0)
+
+            has_alpha = "A" in image.getbands()
+            prefer_png = has_alpha or source_format == "MPO"
+            output_format = "PNG" if prefer_png else "JPEG"
+            mime_type = "image/png" if prefer_png else "image/jpeg"
+
+            if output_format == "JPEG":
+                image = image.convert("RGB")
+            else:
+                image = image.convert("RGBA")
+
+            if max(image.size) > max_edge:
+                image.thumbnail(
+                    (max_edge, max_edge),
+                    Image.Resampling.LANCZOS,
+                )
+
+            buffer = io.BytesIO()
+            save_kwargs: dict[str, Any] = {"format": output_format}
+            if output_format == "JPEG":
+                save_kwargs["quality"] = 90
+                save_kwargs["optimize"] = True
+            else:
+                save_kwargs["optimize"] = True
+
+            image.save(buffer, **save_kwargs)
+
+        image_bytes = buffer.getvalue()
+        if not image_bytes:
+            raise ValueError(f"图片编码失败: {image_path}")
+
+        return mime_type, image_bytes
+
+    def build_multimodal_user_message(self, text: str, image_paths: List[str], file_type: str = "image") -> dict:
+        """构造 OpenAI-compatible 多模态 user message。"""
+        content: list[Any] = [{"type": "text", "text": text}]
+
+        for image_path in image_paths:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": self.encode_image_to_data_url(image_path, file_type=file_type)},
+                }
+            )
+
+        return {
+            "role": "user",
+            "content": content,
+        }
 
 
 def load_system_prompt() -> str:

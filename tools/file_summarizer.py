@@ -19,6 +19,7 @@ WORD_EXTENSIONS = {'.docx'}
 EXCEL_EXTENSIONS = {'.xlsx', '.xls'}
 PPT_EXTENSIONS = {'.pptx'}
 PDF_EXTENSIONS = {'.pdf'}
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.gif'}
 
 
 def get_summary_system_prompt() -> str:
@@ -70,12 +71,52 @@ def build_summary_prompt(content: str, file_type: str, file_name: str) -> str:
             总结："""
 
 
+def build_image_summary_prompt(file_type: str, file_name: str, metadata: Dict[str, Any]) -> str:
+    file_type_desc = {
+        'image': '图片',
+        'pdf': 'PDF 页面截图',
+        'ppt': '演示文稿截图',
+    }.get(file_type, '图片文件')
+
+    detail_hints = {
+        'image': (
+            '先判断图片类型（如照片、截图、扫描件、表格、聊天记录、证书、海报、流程图等），'
+            '再根据类型侧重描述：照片说明场景和主体，截图说明来源软件和内容，'
+            '表格/文档说明主题和关键字段。'
+        ),
+        'pdf': (
+            '把这些当作 PDF 的逐页截图来理解整份文档。'
+            '关注文档主题、章节结构、核心结论或关键数据，'
+            '如果有表格或图表，概括其反映的信息而非逐项转写。'
+        ),
+        'ppt': (
+            '把这些当作演示文稿的逐页截图来理解整份 PPT。'
+            '关注演示主题、逻辑线索和核心观点，'
+            '重点提炼标题页的主题、内容页的关键论点和数据页的核心结论。'
+        ),
+    }.get(file_type, '判断图片内容类型和主要信息。')
+
+    image_count = len(metadata.get('image_paths') or [])
+
+    return (
+        f"请根据提供的{file_type_desc}内容，对文件「{file_name}」做一个简短总结。\n"
+        "总结要求：\n"
+        "- 先用一句话说明这份文件大概是什么\n"
+        "- 再提炼 4-5 条最关键的信息\n"
+        f"- {detail_hints}\n"
+        "- 如果能看清文字，可提取一定的关键标题/字段，但不要为了逐字转写牺牲概括性\n"
+        "- 目标是帮助用户快速判断这是不是自己要找的文件\n"
+        f"- 当前共提供 {image_count} 张图片\n"
+        "- 纯文本输出，不要使用 Markdown 标记"
+    )
+
+
 def detect_file_type(file_path: str) -> str:
     """
     检测文件类型
 
     Returns:
-        'text', 'word', 'excel', 'ppt', 'pdf', 'unknown'
+        'text', 'word', 'excel', 'ppt', 'pdf', 'image', 'unknown'
     """
     ext = Path(file_path).suffix.lower()
 
@@ -89,6 +130,8 @@ def detect_file_type(file_path: str) -> str:
         return 'ppt'
     elif ext in PDF_EXTENSIONS:
         return 'pdf'
+    elif ext in IMAGE_EXTENSIONS:
+        return 'image'
     else:
         return 'unknown'
 
@@ -162,6 +205,8 @@ def read_file_content(
             result = _extract_pptx(file_path, params['max_pages'])
         elif file_type == 'pdf':
             result = _extract_pdf(file_path, params['max_pages'])
+        elif file_type == 'image':
+            result = _extract_image(file_path)
         else:
             # 未知文件类型，仅返回元信息
             result = _extract_metadata_only(file_path)
@@ -346,6 +391,39 @@ def _extract_pdf(file_path: str, max_pages: int) -> Dict[str, Any]:
     }
 
 
+def _extract_image(file_path: str) -> Dict[str, Any]:
+    """提取图片文件信息，供多模态 LLM 做摘要。"""
+    try:
+        stat = os.stat(file_path)
+        return {
+            "success": True,
+            "file_type": "image",
+            "preview_method": "image_file",
+            "content": None,
+            "images": [file_path],
+            "metadata": {
+                "file_name": os.path.basename(file_path),
+                "file_size": stat.st_size,
+                "image_count": 1,
+                "image_paths": [file_path],
+                "has_more": False,
+            },
+            "estimated_tokens": 0,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "file_type": "image",
+            "preview_method": "image_file",
+            "content": None,
+            "images": None,
+            "metadata": {},
+            "estimated_tokens": 0,
+            "error": f"读取图片文件失败: {str(e)}",
+        }
+
+
 def _extract_metadata_only(file_path: str) -> Dict[str, Any]:
     """
     仅提取文件元信息（用于未知文件类型）
@@ -385,7 +463,7 @@ PREVIEW_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "read_file_content",
-        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)，Word/Excel/PPT/PDF暂不支持。优先使用 file_index 从搜索结果中选择，避免路径错误。深度L1=快速预览(约2000字)，L2=详细(约8000字)，L3=完整(需确认)。",
+        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)和图片文件(.png/.jpg/.jpeg/.webp/.bmp/.gif)；Word/Excel/PPT/PDF暂不支持。只能使用 file_index 从搜索结果中选择，避免路径错误。深度L1=快速预览(约2000字)，L2=详细(约8000字)，L3=完整(需确认)。",
         "parameters": {
             "type": "object",
             "properties": {

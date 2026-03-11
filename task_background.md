@@ -1,7 +1,7 @@
 # WeSeeker 唯寻 — 项目任务背景
 
 > 本文件是新会话的上下文载入口，用于快速了解项目现状。请持续维护。
-> 最后更新：2026-03-10
+> 最后更新：2026-03-11
 
 ---
 
@@ -68,12 +68,12 @@ WeSeeker 唯寻是一个运行在 Windows PC 上的**智能文件管家 Agent**�
 | LLM 调用 | OpenAI SDK（兼容 LM Studio / Ollama / 云端 API） | 使用中 |
 | 文件搜索 | Everything HTTP API（localhost:8080） | 使用中 |
 | 配置管理 | PyYAML（config/settings.yaml） | 使用中 |
-| 文件预览 | python-pptx / python-docx / PyMuPDF / openpyxl / Pillow | 未引入 |
+| 文件预览 | python-pptx / python-docx / PyMuPDF / openpyxl / Pillow | Pillow 已使用，其他未引入 |
 | 日志 | loguru | 未引入 |
 | 数据持久化 | SQLite | 未引入 |
 | 消息监听 | 微信/飞书接口 | 未引入 |
 
-当前 requirements.txt 仅有 3 个依赖：`openai`, `requests`, `pyyaml`
+当前 requirements.txt 有 4 个依赖：`openai`, `requests`, `pyyaml`, `Pillow`
 
 ---
 
@@ -131,6 +131,7 @@ WeSeeker/
 │   ├── test_search_combinations.py    # Everything 组合关键词搜索观察脚本
 │   ├── test_filter.py                 # 文件过滤规则测试
 │   ├── test_preview.py                # 文本预览基础测试脚本
+│   ├── test_image_preview_multimodal.py # 图片预览与多模态摘要测试
 │   ├── test_preview_full.py           # 预览全流程测试脚本
 │   ├── test_full_workflow.py          # 端到端主流程测试脚本
 │   ├── test_agent.py                  # Agent 行为测试脚本
@@ -172,6 +173,9 @@ WeSeeker/
 19. **组合搜索观察脚本** — 新增 `test/test_search_combinations.py`，方便人工尝试 Everything 对多词组合（如“项目 PPT”“过年 文档”）在不同路径约束下的返回结果。
 20. **序号作用域提示** — 在 Prompt 与结果文案中明确：`file_index` / `folder_index` 只对应最近一次列出的候选结果；如果用户提到“之前那组”，模型应先澄清或重新列出，避免误把旧序号应用到新列表。
 21. **预览授权 Prompt 约束** — 在 `system_prompt_2.md` 中明确：读取文件内容也需要用户显式同意；用户仅确认“第几个文件/就这个”时，只表示选中目标文件，不等于授权调用 `read_file_content`。
+22. **图片文件预览与多模态摘要** — `read_file_content` 现已支持 `.png/.jpg/.jpeg/.webp/.bmp/.gif`，图片文件会返回 `images` 列表；`Agent` 检测到图片结果后，会通过 `LLMClient` 构造 OpenAI-compatible 多模态消息（`image_url` + data URL）调用 LM Studio/Qwen 生成摘要，已用真实 `grade.png` 链路验证通过。
+23. **图片标准化编码** — `LLMClient.encode_image_to_data_url()` 现在会先用 Pillow 对图片做标准化：自动应用 EXIF 方向、保持长宽比等比例缩放到最长边上限、并对 MPO 等非常规来源图片转为标准 PNG/JPEG 后再编码；已验证可修复 `IMG_5418.JPG` 这类手机拍摄图在 LM Studio 中的 `failed to process image` 报错。
+24. **系统目录探索 Prompt 规则** — `system_prompt_2.md` 已补充：当用户明确询问桌面/下载/文档等系统级目录里有没有某类“相关文件和文件夹”时，若该类别词更像语义类别（如“图片相关”“项目资料”）而不一定出现在真实命名中，模型应优先先看该目录的一级结构，再依据真实子项名称决定是否展开可疑文件夹，而不是立刻拿类别词直接搜索文件名。
 
 ### 已实现但为 Mock
 
@@ -188,7 +192,8 @@ WeSeeker/
 2. **对话历史无上限** — conversation_history 在内存中无限增长，无时间窗口清理
 3. **安全仅靠 Prompt** — security_gate.py 为空壳，没有代码层面的工具白名单/路径校验/注入防御
 4. **敏感信息裸露** — sensitive_sanitizer.py 为空壳，文件内容未经脱敏直接发给 LLM API
-5. **file_summarizer.py 中有废弃 schema** — 底部的 PREVIEW_TOOL_SCHEMA 标记了 DEPRECATED，实际使用 agent.py 中的版本，但未删除
+5. **测试体系仍偏脚本化** — 多数测试以脚本输出和手工观察为主，真实 LLM / Everything 依赖较重，尚未形成稳定的自动化回归套件
+6. **多模态链路仍缺少临时产物治理** — 当前图片摘要已增加等比例缩放和标准化编码，但后续接入 PDF/PPT 转图时仍需补充临时图片文件清理与更细粒度的尺寸/质量策略
 
 ---
 
@@ -222,7 +227,7 @@ WeSeeker/
     → Agent._run_reasoning_loop()：最多5轮
        - 每轮：执行工具调用 → 回填tool结果
        - 若无tool调用或命中早停条件：结束循环
-    → （如果是预览）LLM 额外调用 _summarize_content() → 内容摘要
+    → （如果是预览）按结果类型额外调用 _summarize_content() / _summarize_images() → 内容摘要
 ```
 
 ### file_index 机制
@@ -243,6 +248,8 @@ WeSeeker/
 - 文件夹展开能力通过独立工具实现：`list_folder_contents` 使用 Everything `parent:"..."` 查询直属子项，不复用 `search_files` 的搜索语义；为避免模型误填相对路径，当前仅允许先搜索到文件夹，再用 `folder_index` 展开，展开后的目录项直接替换当前 `candidate_files`
 - Prompt 额外示范“文件夹 → 子文件夹 → 目标文件”的逐层定位流程，但要求只有在目标文件夹命中具有高置信度时才继续展开，降低近似命中导致的误钻取风险
 - Prompt 与工具结果文案都显式声明“序号只对应最近一组结果”，降低模型把旧候选列表序号误用于新候选列表的风险
+- 图片预览摘要新增多模态支路：`read_file_content` 若返回 `images`，则由 `LLMClient.build_multimodal_user_message()` 将本地图片标准化后编码为 data URL，并以 OpenAI-compatible `image_url` 结构发送给 LM Studio 进行总结；标准化阶段会保持原始长宽比，仅做整体缩放，不改变图内物体比例；后续 PDF/PPT 转图可复用该链路
+- Prompt 新增“系统目录探索”策略：当用户目标是判断桌面/下载/文档等系统目录下是否存在某类相关内容时，先把系统目录当作入口展开一级结构，再根据真实目录名和文件名决定是否继续展开，降低因文件夹名称未包含语义关键词而漏检的概率
 
 ---
 
@@ -259,6 +266,11 @@ llm:
   local:
     timeout: 60                  # 本地模型超时（秒）
     temperature: 0.3
+    multimodal:
+      image_max_edge:
+        image: 2048              # 普通照片/截图最长边（等比例缩放）
+        pdf: 3072                # PDF 页面截图最长边（优先保字）
+        ppt: 3072                # PPT 页面截图最长边（优先保字）
 
 everything:
   host: "127.0.0.1"
@@ -281,15 +293,9 @@ sender:
 |------|--------|------|------|
 | 2026-03-03 | `3d1004f`, `4826fc1`, `f1ff399`, `c41945d` | 初始化+重构+功能+Bug 修复 | 完成 MVP 初始提交与目录重组；落地 CLI、Agent 主循环、LLM 客户端、Everything 搜索、文件发送（Mock）、文本类文件预览与搜索过滤；新增 file_index 机制，修复 LLM 幻觉导致的文件路径错误。 |
 | 2026-03-04 | `24755be`, `e73b52b` | Prompt 重写+功能+修复+文档 | 新增并切换到 `system_prompt_2.md`，重写 `file_search.md` / `file_peek.md` / `file_send.md` / `chat.md`，新增 `task_background.md`；支持本地 LLM（LM Studio/Ollama）、`--debug` 调试模式、`read_file_content` 的 file_index 防幻觉能力，并统一工具命名。 |
-| 2026-03-05 | 未提交 | 功能+Bug 修复+测试+文档 | 实现 Agent 最多 5 轮自动工具推理、重复搜索拦截、低增益/空结果早停与最小澄清追问；新增 `test_iterative_tool_loop.py` 与 `test_real_fallback_e2e.py`，补充 `<iterative_tool_reasoning>` prompt 规则并更新背景文档；当时的澄清失败兜底采用 `[WARNING]` 前缀方案。 |
-| 2026-03-06 | 未提交 | Bug 修复+重构+测试+文档 | 修复 Everything FILETIME 时间转换；新增 `core/config_loader.py`、`core/reasoning_state.py`、`core/tool_executor.py`，完成不改功能的可维护性重构；在 `base` 环境跑通 `test_iterative_tool_loop.py`、`test_everything_timestamp.py`、`test_real_fallback_e2e.py`。 |
-| 2026-03-07 | 未提交 | 文档+Bug 修复+重构+测试 | 新增 `terminal_trace_design_v2.md`；修复失败 turn 回滚、非法工具参数显式报错、Markdown 保守清理等健壮性问题；移除运行时代码中的 `sys.path` 注入、修复文本预览二次整文件读取，并将全部测试脚本迁移到 `test/` 目录后完成多项回归验证与 `compileall` 检查。 |
-| 2026-03-08 | 未提交 | 重构+Bug 修复+测试+文档 | 新增 `core/entities.py` 与 `工具类代码重构(用英文).md`，完成 Tool 类重构阶段一并更新 `AGENTS.md`；调整最终回复链路以保留模型原始 Markdown；新增并强化 `test/test_empty_response_event.py`；将 `ToolSpec`、`ErrorEvent`、`PauseEvent` 等配置逐步收口到 `core/entities.py`，并在 `task_background.md` 补充会话协作约定。 |
-| 2026-03-09 | 未提交 | 重构+功能+测试+Prompt+文档 | `PauseEvent` 新增 `default_fallback_msg`，澄清失败/空响应兜底文案完全迁入 `core/entities.py`，删除 `Agent._build_warning_fallback()`，并改为直接向用户返回 fallback 文案、不暴露 `[WARNING]` 前缀；收紧 `system_prompt_2.md` 的自动搜索规则，要求第一次 `search_files` 无结果就引导用户补充线索，并补充“文件夹 → 子文件夹 → 目标文件”的连续推进示例；新增基于 Everything `parent:"绝对路径"` 的 `list_folder_contents` 工具，支持列出文件夹直属子项并复用 `candidate_files`，且为避免模型误填相对路径，当前强制先 `search_files` 再用 `folder_index` 展开；补充 `test/test_list_folder_contents.py`，在 `base` 环境跑通 `python -m test.test_list_folder_contents` 与 `python -m test.test_iterative_tool_loop`。 |
-| 2026-03-10 | 未提交 | 测试+Prompt+文档+重构 | 新增 `test/test_search_combinations.py`，用于人工观察 Everything 在多词组合关键词与不同路径约束下的实际返回结果；并在 Prompt 与搜索/文件夹结果文案中补充“序号只对应最近一组结果”的提示，降低旧序号误用风险；同时将文件内容总结的 Prompt 组装从 `core/agent.py` 下沉到 `tools/file_summarizer.py`，由工具模块统一维护摘要提示模板；进一步收紧文件夹连续推进规则，要求只有在搜索结果对目标文件夹是唯一且高置信度命中时才允许继续展开；并补充“读取文件内容需要用户显式同意，单纯确认序号不等于允许预览”的 Prompt 约束；同步更新 `task_background.md`。 |
-| 2026-03-10 | 未提交 | 文档 | 按当前实际目录重写 `README.md`、`AGENTS.md`、`task_background.md`、`WeSeeker-唯寻_技术大纲.md` 的结构说明，统一 `doc/`、`test/`、`test/debug_llm_messages.py`、`doc/tool_class_refactor*.md` 等新路径，并为主要文件/文件夹补充用途描述。 |
-| 2026-03-10 | `134a01e` | 功能+重构+Prompt+文档+配置 | 收口 Agent 推理框架并增强文件夹检索链路：新增 `list_folder_contents`、`core/entities.py` 与统一工具/事件配置，补强空响应兜底、失败回滚、非法参数处理、`<think>` 清理与摘要 Prompt 下沉；同时同步更新 `README.md`、`AGENTS.md`、`task_background.md`、技术大纲与 `.gitignore`，明确当前目录结构、预览授权边界、候选序号作用域以及 `doc/` / `test/` 的版本控制范围。 |
-| 2026-03-10 | 未提交 | 配置+清理 | 移除仓库根目录旧版测试/调试脚本的 git 跟踪，仅保留本地 `test/` 目录中的对应脚本；当前工作区待记录删除 `debug_llm_messages.py`、`test_agent.py`、`test_filter.py`、`test_full_workflow.py`、`test_iterative_tool_loop.py`、`test_local_llm.py`、`test_preview.py`、`test_preview_full.py`、`test_search.py`。 |
+| 2026-03-05 ~ 2026-03-10 | 已归档至 `134a01e` | 功能+重构+Prompt+测试+文档+配置 | 归并记录这段时间的连续未提交开发：完成 Agent 最多 5 轮自动工具推理、重复搜索拦截、低增益/空结果早停与最小澄清；修复 Everything FILETIME 转换、失败回滚、非法工具参数显式报错、文本预览重复读取与本地模型 `<think>` / Markdown 噪声问题；新增 `core/config_loader.py`、`core/reasoning_state.py`、`core/tool_executor.py`、`core/entities.py`、`tools/folder_lister.py`，收口 ToolSpec / ErrorEvent / PauseEvent 配置并支持 `list_folder_contents` 文件夹逐层展开；将摘要 Prompt 下沉到 `tools/file_summarizer.py`，同步收紧 `system_prompt_2.md` 中的首次空搜索、候选序号作用域、预览授权和文件夹连续推进规则；补充并迁移测试脚本到 `test/`，同时重写 `README.md`、`AGENTS.md`、`task_background.md`、`WeSeeker-唯寻_技术大纲.md` 以对齐当前目录结构。 |
+| 2026-03-10 | `55d73fc` | 配置+清理+文档 | 移除仓库根目录旧版测试/调试脚本的 git 跟踪，仅保留本地 `test/` 目录中的对应脚本；同步更新 `task_background.md`，补记 `134a01e` 的正式归档记录，并调整当前文档维护状态说明。 |
+| 2026-03-11 | 未提交 | 功能+测试+文档+依赖 | 为 `read_file_content` 增加图片文件预览结果协议，接入 `LLMClient` 的多模态图片消息构造与 `Agent` 的图片摘要分支；新增 `test/test_image_preview_multimodal.py`，并引入 `Pillow` 用于图片标准化编码、MPO 兼容和等比例缩放；新增 `settings.yaml` 的多模态图片最长边配置（image=2048、pdf/ppt=3072）；同时补充 `system_prompt_2.md` 的系统目录探索规则，指导模型在“桌面/下载/文档里有没有某类相关文件和文件夹”场景下优先先看一级目录结构；在 conda base 环境下完成编译检查、FakeLLM 测试及真实 LM Studio 图片预览链路验证。 |
 
 ---
 
