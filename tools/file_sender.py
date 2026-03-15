@@ -72,17 +72,17 @@ SEND_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "send_file",
-        "description": "发送文件到用户微信。发送前必须经过用户确认。优先使用 file_index（序号）从搜索结果中选择文件，避免路径错误。",
+        "description": "发送文件到用户微信。发送前必须经过用户确认。只能使用 file_index（序号）从搜索结果中选择文件，避免路径错误。",
         "parameters": {
             "type": "object",
             "properties": {
                 "file_index": {
                     "type": "integer",
-                    "description": "文件序号（推荐），从搜索结果列表中选择，如 1、2、3 等。优先使用此参数！"
+                    "description": "文件序号（推荐），从搜索结果列表中选择，如 1、2、3 等。只能使用此参数！"
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "文件完整路径（备选），仅在没有搜索结果时使用"
+                    "description": "文件完整路径（目前禁用）"
                 },
                 "target": {
                     "type": "string",

@@ -7,8 +7,14 @@ LLM 调用仍由调用方（Agent）负责。
 """
 
 import os
+import textwrap
+import tempfile
 from typing import Optional, Dict, Any
 from pathlib import Path
+
+import fitz
+
+from core.config_loader import load_config
 
 # 支持的文件类型
 TEXT_EXTENSIONS = {'.txt', '.md', '.markdown', '.py', '.js', '.java', '.c', '.cpp', '.h', '.hpp',
@@ -58,17 +64,30 @@ def build_summary_prompt(content: str, file_type: str, file_name: str) -> str:
         if is_truncated else ""
     )
 
-    return f"""请对以下{file_type_desc}「{file_name}」进行总结。
-            总结要求：
-            - 先用一句话概括这个文件是什么、关于什么主题
-            - 再用 1-3 句话提炼关键内容
-            - {type_hint}
-            - 总结控制在 200-300 字以内
-            文件内容：
-            ---
-            {display_content}
-            ---{truncation_notice}
-            总结："""
+    # return f"""请对以下{file_type_desc}「{file_name}」进行总结。
+    #         总结要求：
+    #         - 先用一句话概括这个文件是什么、关于什么主题
+    #         - 再用 1-3 句话提炼关键内容
+    #         - {type_hint}
+    #         - 总结控制在 200-300 字以内
+    #         文件内容：
+    #         ---
+    #         {display_content}
+    #         ---{truncation_notice}
+    #         总结："""
+
+    return textwrap.dedent(f"""\
+        请对以下{file_type_desc}「{file_name}」进行总结。
+        总结要求：
+        - 先用一句话概括这个文件是什么、关于什么主题
+        - 再用 1-3 句话提炼关键内容
+        - {type_hint}
+        - 总结控制在 200-300 字以内
+        文件内容：
+        ---
+        {display_content}
+        ---{truncation_notice}
+        总结：""")
 
 
 def build_image_summary_prompt(file_type: str, file_name: str, metadata: Dict[str, Any]) -> str:
@@ -229,12 +248,54 @@ def read_file_content(
 def _get_depth_params(depth: str) -> Dict[str, int]:
     """根据深度等级获取默认参数"""
     depth = depth.upper()
+    text_depth_chars = _get_text_depth_chars()
+    excel_depth_rows = _get_excel_depth_rows()
+    pdf_depth_pages = _get_pdf_depth_pages()
     params = {
-        'L1': {'max_chars': 2000, 'max_pages': 3, 'max_rows': 10},
-        'L2': {'max_chars': 8000, 'max_pages': 6, 'max_rows': 30},
-        'L3': {'max_chars': 50000, 'max_pages': 50, 'max_rows': 1000}
+        'L1': {'max_chars': text_depth_chars['L1'], 'max_pages': pdf_depth_pages['L1'], 'max_rows': excel_depth_rows['L1']},
+        'L2': {'max_chars': text_depth_chars['L2'], 'max_pages': pdf_depth_pages['L2'], 'max_rows': excel_depth_rows['L2']},
+        'L3': {'max_chars': text_depth_chars['L3'], 'max_pages': pdf_depth_pages['L3'], 'max_rows': excel_depth_rows['L3']}
     }
     return params.get(depth, params['L1'])
+
+
+def _get_text_depth_chars() -> Dict[str, int]:
+    defaults = {'L1': 2000, 'L2': 5000, 'L3': 8000}
+    return _read_depth_config('text', 'depth_chars', defaults)
+
+
+def _get_excel_depth_rows() -> Dict[str, int]:
+    defaults = {'L1': 10, 'L2': 50, 'L3': 100}
+    return _read_depth_config('excel', 'depth_rows', defaults)
+
+
+def _get_pdf_depth_pages() -> Dict[str, int]:
+    defaults = {'L1': 1, 'L2': 2, 'L3': 3}
+
+    return _read_depth_config('pdf', 'depth_pages', defaults)
+
+
+def _read_depth_config(section: str, key: str, defaults: Dict[str, int]) -> Dict[str, int]:
+    result = dict(defaults)
+
+    try:
+        config = load_config()
+        configured = config.get('preview', {}).get(section, {}).get(key, {})
+        for level, fallback in defaults.items():
+            value = configured.get(level, fallback)
+            result[level] = value if isinstance(value, int) and value > 0 else fallback
+        return result
+    except Exception:
+        return dict(defaults)
+
+
+def _get_pdf_render_scale() -> float:
+    try:
+        config = load_config()
+        value = config.get('preview', {}).get('pdf', {}).get('render_scale', 2.0)
+        return float(value) if float(value) > 0 else 2.0
+    except Exception:
+        return 2.0
 
 
 def _estimate_tokens(text: str) -> int:
@@ -373,22 +434,66 @@ def _extract_pptx(file_path: str, max_pages: int) -> Dict[str, Any]:
 
 
 def _extract_pdf(file_path: str, max_pages: int) -> Dict[str, Any]:
-    """
-    提取 PDF 文档内容 [接口预留]
+    """提取 PDF 前若干页为图片，供多模态 LLM 做摘要。"""
+    try:
+        render_scale = _get_pdf_render_scale()
 
-    支持: .pdf
-    TODO: 使用 PyMuPDF 提取前 max_pages 页文字
-    """
-    return {
-        "success": False,
-        "file_type": "pdf",
-        "preview_method": "pdf_reader",
-        "content": None,
-        "images": None,
-        "metadata": {},
-        "estimated_tokens": 0,
-        "error": "PDF 预览功能尚未实现"
-    }
+        with fitz.open(file_path) as doc:
+            total_pages = len(doc)
+            if total_pages == 0:
+                return {
+                    "success": False,
+                    "file_type": "pdf",
+                    "preview_method": "pdf_page_images",
+                    "content": None,
+                    "images": None,
+                    "metadata": {},
+                    "estimated_tokens": 0,
+                    "error": "PDF 没有可预览的页面",
+                }
+
+            preview_pages = min(max_pages, total_pages)
+            temp_dir = Path(tempfile.mkdtemp(prefix="weseeker_pdf_"))
+            image_paths = []
+            matrix = fitz.Matrix(render_scale, render_scale)
+
+            for page_index in range(preview_pages):
+                page = doc.load_page(page_index)
+                pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+                image_path = temp_dir / f"page_{page_index + 1}.png"
+                pixmap.save(str(image_path))
+                image_paths.append(str(image_path))
+
+        return {
+            "success": True,
+            "file_type": "pdf",
+            "preview_method": "pdf_page_images",
+            "content": None,
+            "images": image_paths,
+            "metadata": {
+                "file_name": os.path.basename(file_path),
+                "total_pages": total_pages,
+                "preview_pages": preview_pages,
+                "image_count": len(image_paths),
+                "image_paths": image_paths,
+                "render_scale": render_scale,
+                "temp_dir": str(temp_dir),
+                "has_more": total_pages > preview_pages,
+            },
+            "estimated_tokens": 0,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "file_type": "pdf",
+            "preview_method": "pdf_page_images",
+            "content": None,
+            "images": None,
+            "metadata": {},
+            "estimated_tokens": 0,
+            "error": f"读取 PDF 失败: {str(e)}",
+        }
 
 
 def _extract_image(file_path: str) -> Dict[str, Any]:
@@ -463,7 +568,7 @@ PREVIEW_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "read_file_content",
-        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)和图片文件(.png/.jpg/.jpeg/.webp/.bmp/.gif)；Word/Excel/PPT/PDF暂不支持。只能使用 file_index 从搜索结果中选择，避免路径错误。深度L1=快速预览(约2000字)，L2=详细(约8000字)，L3=完整(需确认)。",
+        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)、图片文件(.png/.jpg/.jpeg/.webp/.bmp/.gif)和 PDF 文件；PDF 当前通过前几页截图进行预览总结。只能使用 file_index 从搜索结果中选择，避免路径错误。深度 L1/L2/L3 表示预览程度：文本默认读取 2000/5000/8000 字，Excel 默认查看 10/50/100 行，PDF 默认查看前 1/2/3 页。",
         "parameters": {
             "type": "object",
             "properties": {

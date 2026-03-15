@@ -506,6 +506,12 @@ class Agent:
         if metadata.get("preview_chars"):
             preview_lines.append(f"预览字符数: {metadata['preview_chars']}")
 
+        if metadata.get("total_pages"):
+            preview_lines.append(f"总页数: {metadata['total_pages']}")
+
+        if metadata.get("preview_pages"):
+            preview_lines.append(f"已预览页数: {metadata['preview_pages']}")
+
         if metadata.get("has_more"):
             preview_lines.append("⚠️ 文件内容较长，仅显示部分内容")
 
@@ -517,6 +523,8 @@ class Agent:
         elif images:
             preview_lines.append("\n🖼️ 图片摘要:\n")
             summary = self._summarize_images(images, file_type, os.path.basename(file_path), metadata)
+            if metadata.get("used_image_max_edge"):
+                preview_lines.append(f"图片长边上限: {metadata['used_image_max_edge']}")
             preview_lines.append(summary)
 
         return "\n".join(preview_lines)
@@ -543,21 +551,60 @@ class Agent:
 
     def _summarize_images(self, image_paths: List[str], file_type: str, file_name: str, metadata: Dict[str, Any]) -> str:
         """使用多模态 LLM 对图片内容进行总结。"""
-        try:
-            prompt = build_image_summary_prompt(file_type, file_name, metadata)
+        prompt = build_image_summary_prompt(file_type, file_name, metadata)
+        retry_edges = self._get_image_retry_edges(file_type)
+        last_error = None
 
-            response = self.llm_client.chat(
-                messages=[
-                    {"role": "system", "content": get_summary_system_prompt()},
-                    self.llm_client.build_multimodal_user_message(prompt, image_paths, file_type=file_type),
-                ]
-            )
+        for max_edge in retry_edges:
+            try:
+                effective_edge = max_edge or self.llm_client._get_multimodal_image_edge(file_type)
+                response = self.llm_client.chat(
+                    messages=[
+                        {"role": "system", "content": get_summary_system_prompt()},
+                        self.llm_client.build_multimodal_user_message(
+                            prompt,
+                            image_paths,
+                            file_type=file_type,
+                            max_edge_override=max_edge,
+                        ),
+                    ]
+                )
 
-            summary = self.llm_client.get_response_content(response)
-            return summary if summary else "无法生成图片总结"
+                summary = self.llm_client.get_response_content(response)
+                metadata["used_image_max_edge"] = effective_edge
+                return summary if summary else "无法生成图片总结"
 
-        except Exception as e:
-            return f"图片总结生成失败: {str(e)}"
+            except Exception as e:
+                last_error = e
+                print('----- LLM IMG Process Error -----')
+                if not self._is_retryable_image_error(e):
+                    break
+
+        return f"图片总结生成失败: {str(last_error)}"
+
+    def _get_image_retry_edges(self, file_type: str) -> List[Optional[int]]:
+        if file_type == "pdf":
+            return self._build_retry_edge_chain(file_type, [1792, 1536, 1024])
+        if file_type == "ppt":
+            return self._build_retry_edge_chain(file_type, [2048, 1792, 1536])
+        return [None]
+
+    def _build_retry_edge_chain(self, file_type: str, fallbacks: List[int]) -> List[Optional[int]]:
+        default_edge = self.llm_client._get_multimodal_image_edge(file_type)
+        chain: List[Optional[int]] = [default_edge] 
+
+        for edge in fallbacks:
+            if edge < default_edge and edge not in chain:
+                chain.append(edge)
+
+        if 1024 < default_edge and 1024 not in chain:
+            chain.append(1024)
+
+        return chain # 如果 file_type='pdf', 则返回 [2048, 1792, 1536, 1024]
+
+    def _is_retryable_image_error(self, error: Exception) -> bool:
+        error_text = str(error).lower()
+        return "failed to process image" in error_text or "image" in error_text and "invalid_request_error" in error_text
 
     def clear_history(self):
         """清空对话历史"""

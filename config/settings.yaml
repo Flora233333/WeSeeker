@@ -6,23 +6,23 @@ llm:
   # - lmstudio: LM Studio 本地部署（支持任意 IP:端口）
   # - ollama: Ollama 本地部署
   # - cloud: 云端 API（包括 dashscope、openai、deepseek、Kimi 等）
-  provider: "lmstudio"
+  provider: "cloud"
 
   # API 基础配置
   # 云端 API: 填写服务商提供的完整地址（如 https://dashscope.aliyuncs.com/compatible-mode/v1）
   # LM Studio: 填写界面显示的地址（如 http://100.69.36.118:1234，程序会自动补全 /v1）
   # Ollama: 默认 http://localhost:11434（程序会自动补全 /v1）
-  api_base: "http://100.69.36.118:1234"
+  api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
   # API 密钥
   # 云端 API: 必须填写有效的 API Key
   # 本地 LLM (lmstudio/ollama): 可不填或填任意值
-  api_key: ""
+  api_key: "sk-a4334bda622d44588d1d08f58d7b84ff"
 
   # 模型名称
   # 云端: 填写服务商要求的模型名（如 qwen3.5-plus, gpt-4, deepseek-chat）
   # 本地: LM Studio 可填任意值，Ollama 需填实际模型名（如 qwen2.5:14b）
-  model: ""
+  model: "qwen3.5-flash"
 
   # 本地 LLM 专用配置（仅 lmstudio/ollama 生效）
   local:
@@ -34,8 +34,26 @@ llm:
     multimodal:
       image_max_edge:
         image: 2048   # 普通照片/截图
-        pdf: 3072     # PDF 页面截图，优先保留文字可读性
-        ppt: 3072     # PPT 页面截图，优先保留文字可读性
+        pdf: 2048     # PDF 页面截图，优先保证多页场景兼容性
+        ppt: 2048     # PPT 页面截图，优先保留文字可读性
+
+preview:
+  text:
+    depth_chars:
+      L1: 2000       # 快速预览
+      L2: 5000       # 中等长度预览
+      L3: 8000       # 较详细预览
+  excel:
+    depth_rows:
+      L1: 10         # 快速查看前几行
+      L2: 50         # 中等行数预览
+      L3: 100        # 较详细预览
+  pdf:
+    depth_pages:
+      L1: 1          # 快速预览
+      L2: 2          # 更完整地看前两页
+      L3: 3          # 小批量预览，便于当前模型稳定处理
+    render_scale: 3.0 # PDF 转图倍率，优先保留文字清晰度
 
 everything:
   host: "127.0.0.1"

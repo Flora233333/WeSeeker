@@ -1,7 +1,7 @@
 # WeSeeker 唯寻 — 项目任务背景
 
 > 本文件是新会话的上下文载入口，用于快速了解项目现状。请持续维护。
-> 最后更新：2026-03-11
+> 最后更新：2026-03-12
 
 ---
 
@@ -68,12 +68,12 @@ WeSeeker 唯寻是一个运行在 Windows PC 上的**智能文件管家 Agent**�
 | LLM 调用 | OpenAI SDK（兼容 LM Studio / Ollama / 云端 API） | 使用中 |
 | 文件搜索 | Everything HTTP API（localhost:8080） | 使用中 |
 | 配置管理 | PyYAML（config/settings.yaml） | 使用中 |
-| 文件预览 | python-pptx / python-docx / PyMuPDF / openpyxl / Pillow | Pillow 已使用，其他未引入 |
+| 文件预览 | python-pptx / python-docx / PyMuPDF / openpyxl / Pillow | Pillow / PyMuPDF 已使用，其他未引入 |
 | 日志 | loguru | 未引入 |
 | 数据持久化 | SQLite | 未引入 |
 | 消息监听 | 微信/飞书接口 | 未引入 |
 
-当前 requirements.txt 有 4 个依赖：`openai`, `requests`, `pyyaml`, `Pillow`
+当前 requirements.txt 有 5 个依赖：`openai`, `requests`, `pyyaml`, `Pillow`, `PyMuPDF`
 
 ---
 
@@ -132,6 +132,8 @@ WeSeeker/
 │   ├── test_filter.py                 # 文件过滤规则测试
 │   ├── test_preview.py                # 文本预览基础测试脚本
 │   ├── test_image_preview_multimodal.py # 图片预览与多模态摘要测试
+│   ├── test_pdf_preview_multimodal.py # PDF 转图预览与多模态摘要测试
+│   ├── test_pdf_render_scale.py       # PDF 渲染倍率观察脚本
 │   ├── test_preview_full.py           # 预览全流程测试脚本
 │   ├── test_full_workflow.py          # 端到端主流程测试脚本
 │   ├── test_agent.py                  # Agent 行为测试脚本
@@ -176,6 +178,10 @@ WeSeeker/
 22. **图片文件预览与多模态摘要** — `read_file_content` 现已支持 `.png/.jpg/.jpeg/.webp/.bmp/.gif`，图片文件会返回 `images` 列表；`Agent` 检测到图片结果后，会通过 `LLMClient` 构造 OpenAI-compatible 多模态消息（`image_url` + data URL）调用 LM Studio/Qwen 生成摘要，已用真实 `grade.png` 链路验证通过。
 23. **图片标准化编码** — `LLMClient.encode_image_to_data_url()` 现在会先用 Pillow 对图片做标准化：自动应用 EXIF 方向、保持长宽比等比例缩放到最长边上限、并对 MPO 等非常规来源图片转为标准 PNG/JPEG 后再编码；已验证可修复 `IMG_5418.JPG` 这类手机拍摄图在 LM Studio 中的 `failed to process image` 报错。
 24. **系统目录探索 Prompt 规则** — `system_prompt_2.md` 已补充：当用户明确询问桌面/下载/文档等系统级目录里有没有某类“相关文件和文件夹”时，若该类别词更像语义类别（如“图片相关”“项目资料”）而不一定出现在真实命名中，模型应优先先看该目录的一级结构，再依据真实子项名称决定是否展开可疑文件夹，而不是立刻拿类别词直接搜索文件名。
+25. **PDF 转图预览与多模态摘要** — `read_file_content` 现已支持 PDF：基于 PyMuPDF 将前几页渲染为 PNG，再复用现有图片多模态摘要链路；当前 `L1/L2/L3` 对 PDF 默认对应前 `1/2/3` 页，配置位于 `settings.yaml -> preview.pdf.depth_pages`。
+26. **PDF 页数与渲染倍率解耦配置** — 新增 `settings.yaml -> preview.pdf.render_scale` 控制 PDF 转图倍率，与 `llm.local.multimodal.image_max_edge.pdf` 的图片最长边压缩分离，便于后续单独测试字清晰度与模型稳定性。
+27. **文本/Excel/PDF 预览深度统一配置化** — `settings.yaml -> preview` 现统一承载不同文件类型的深度参数：文本 `depth_chars` 为 `2000/5000/8000`，Excel `depth_rows` 为 `10/50/100`，PDF `depth_pages` 为 `1/2/3`；`read_file_content` 的 `L1/L2/L3` 仍保持用户语义稳定，但底层阈值已从硬编码迁移为配置读取。
+28. **PDF 图片处理失败自动降级重试** — 针对部分 PDF 页面在高分辨率下会触发 LM Studio `failed to process image` 的情况，`Agent._summarize_images()` 现对 PDF/PPT 图片摘要增加按最长边 `默认值 -> 1792 -> 1536 -> 1024` 的自动重试；在当前 `pdf image_max_edge=2048` 配置下，实际生效链路即 `2048 -> 1792 -> 1536 -> 1024`，优先保留 `render_scale=3.0` 的清晰渲染，同时在模型侧失败时自动降采样兜底；已用 `人工智能在烟花爆竹生产中的应用\1.pdf` 的 L3 三页预览真实验证通过。
 
 ### 已实现但为 Mock
 
@@ -248,7 +254,8 @@ WeSeeker/
 - 文件夹展开能力通过独立工具实现：`list_folder_contents` 使用 Everything `parent:"..."` 查询直属子项，不复用 `search_files` 的搜索语义；为避免模型误填相对路径，当前仅允许先搜索到文件夹，再用 `folder_index` 展开，展开后的目录项直接替换当前 `candidate_files`
 - Prompt 额外示范“文件夹 → 子文件夹 → 目标文件”的逐层定位流程，但要求只有在目标文件夹命中具有高置信度时才继续展开，降低近似命中导致的误钻取风险
 - Prompt 与工具结果文案都显式声明“序号只对应最近一组结果”，降低模型把旧候选列表序号误用于新候选列表的风险
-- 图片预览摘要新增多模态支路：`read_file_content` 若返回 `images`，则由 `LLMClient.build_multimodal_user_message()` 将本地图片标准化后编码为 data URL，并以 OpenAI-compatible `image_url` 结构发送给 LM Studio 进行总结；标准化阶段会保持原始长宽比，仅做整体缩放，不改变图内物体比例；后续 PDF/PPT 转图可复用该链路
+- 图片预览摘要新增多模态支路：`read_file_content` 若返回 `images`，则由 `LLMClient.build_multimodal_user_message()` 将本地图片标准化后编码为 data URL，并以 OpenAI-compatible `image_url` 结构发送给 LM Studio 进行总结；标准化阶段会保持原始长宽比，仅做整体缩放，不改变图内物体比例
+- PDF 预览已改为“转图后复用图片摘要”：`tools/file_summarizer.py` 使用 PyMuPDF 将前几页渲染为 PNG，`Agent` 统一走 `_summarize_images()`；PDF 取页数与转图倍率都从 `settings.yaml` 读取，避免把 `L1/L2/L3` 和具体页数硬编码耦合在一起
 - Prompt 新增“系统目录探索”策略：当用户目标是判断桌面/下载/文档等系统目录下是否存在某类相关内容时，先把系统目录当作入口展开一级结构，再根据真实目录名和文件名决定是否继续展开，降低因文件夹名称未包含语义关键词而漏检的概率
 
 ---
@@ -269,8 +276,26 @@ llm:
     multimodal:
       image_max_edge:
         image: 2048              # 普通照片/截图最长边（等比例缩放）
-        pdf: 3072                # PDF 页面截图最长边（优先保字）
+        pdf: 2105                # PDF 页面截图最长边（按 2.5x 样例页长边设置）
         ppt: 3072                # PPT 页面截图最长边（优先保字）
+
+preview:
+  text:
+    depth_chars:
+      L1: 2000
+      L2: 5000
+      L3: 8000
+  excel:
+    depth_rows:
+      L1: 10
+      L2: 50
+      L3: 100
+  pdf:
+    depth_pages:
+      L1: 1
+      L2: 2
+      L3: 3
+    render_scale: 3.0
 
 everything:
   host: "127.0.0.1"
@@ -295,7 +320,8 @@ sender:
 | 2026-03-04 | `24755be`, `e73b52b` | Prompt 重写+功能+修复+文档 | 新增并切换到 `system_prompt_2.md`，重写 `file_search.md` / `file_peek.md` / `file_send.md` / `chat.md`，新增 `task_background.md`；支持本地 LLM（LM Studio/Ollama）、`--debug` 调试模式、`read_file_content` 的 file_index 防幻觉能力，并统一工具命名。 |
 | 2026-03-05 ~ 2026-03-10 | 已归档至 `134a01e` | 功能+重构+Prompt+测试+文档+配置 | 归并记录这段时间的连续未提交开发：完成 Agent 最多 5 轮自动工具推理、重复搜索拦截、低增益/空结果早停与最小澄清；修复 Everything FILETIME 转换、失败回滚、非法工具参数显式报错、文本预览重复读取与本地模型 `<think>` / Markdown 噪声问题；新增 `core/config_loader.py`、`core/reasoning_state.py`、`core/tool_executor.py`、`core/entities.py`、`tools/folder_lister.py`，收口 ToolSpec / ErrorEvent / PauseEvent 配置并支持 `list_folder_contents` 文件夹逐层展开；将摘要 Prompt 下沉到 `tools/file_summarizer.py`，同步收紧 `system_prompt_2.md` 中的首次空搜索、候选序号作用域、预览授权和文件夹连续推进规则；补充并迁移测试脚本到 `test/`，同时重写 `README.md`、`AGENTS.md`、`task_background.md`、`WeSeeker-唯寻_技术大纲.md` 以对齐当前目录结构。 |
 | 2026-03-10 | `55d73fc` | 配置+清理+文档 | 移除仓库根目录旧版测试/调试脚本的 git 跟踪，仅保留本地 `test/` 目录中的对应脚本；同步更新 `task_background.md`，补记 `134a01e` 的正式归档记录，并调整当前文档维护状态说明。 |
-| 2026-03-11 | 未提交 | 功能+测试+文档+依赖 | 为 `read_file_content` 增加图片文件预览结果协议，接入 `LLMClient` 的多模态图片消息构造与 `Agent` 的图片摘要分支；新增 `test/test_image_preview_multimodal.py`，并引入 `Pillow` 用于图片标准化编码、MPO 兼容和等比例缩放；新增 `settings.yaml` 的多模态图片最长边配置（image=2048、pdf/ppt=3072）；同时补充 `system_prompt_2.md` 的系统目录探索规则，指导模型在“桌面/下载/文档里有没有某类相关文件和文件夹”场景下优先先看一级目录结构；在 conda base 环境下完成编译检查、FakeLLM 测试及真实 LM Studio 图片预览链路验证。 |
+| 2026-03-11 | 未提交 | 功能+测试+文档+依赖 | 为 `read_file_content` 增加图片文件预览结果协议，接入 `LLMClient` 的多模态图片消息构造与 `Agent` 的图片摘要分支；新增 `test/test_image_preview_multimodal.py`，并引入 `Pillow` 用于图片标准化编码、MPO 兼容和等比例缩放；新增 `settings.yaml` 的多模态图片最长边配置（image=2048、pdf=2105、ppt=3072）；同时补充 `system_prompt_2.md` 的系统目录探索规则，指导模型在“桌面/下载/文档里有没有某类相关文件和文件夹”场景下优先先看一级目录结构；在 conda base 环境下完成编译检查、FakeLLM 测试及真实 LM Studio 图片预览链路验证。 |
+| 2026-03-12 | 未提交 | 功能+测试+文档+依赖 | 实现 PDF 预览第一版：`tools/file_summarizer.py` 使用 PyMuPDF 将 PDF 前几页渲染为 PNG，并复用现有图片多模态摘要链路；新增 `preview.pdf.depth_pages`（L1/L2/L3 默认 1/2/3 页）与 `preview.pdf.render_scale` 配置，实现预览深度和实际取页/渲染倍率解耦；同时将文本/Excel 的深度阈值也迁移到 `settings.yaml -> preview`（文本 2000/5000/8000 字，Excel 10/50/100 行）；补充 `test/test_pdf_preview_multimodal.py` 与 `test/test_pdf_render_scale.py`，并为 PDF/PPT 图片摘要增加失败后的自动降采样重试，修复部分高分辨率 PDF 页面在 LM Studio 中 `failed to process image` 的问题；同步更新 `system_prompt_2.md`、`requirements.txt` 与 `task_background.md`。 |
 
 ---
 

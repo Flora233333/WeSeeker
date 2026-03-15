@@ -28,8 +28,8 @@ DEFAULT_BASE_URLS = {
 
 DEFAULT_MULTIMODAL_IMAGE_EDGES = {
     "image": 2048,
-    "pdf": 3072,
-    "ppt": 3072,
+    "pdf": 2048,
+    "ppt": 2048,
 }
 
 
@@ -205,11 +205,16 @@ class LLMClient:
 
         return DEFAULT_MULTIMODAL_IMAGE_EDGES.get(file_type, DEFAULT_MULTIMODAL_IMAGE_EDGES["image"])
 
-    def encode_image_to_data_url(self, image_path: str, file_type: str = "image") -> str:
+    def encode_image_to_data_url(
+        self,
+        image_path: str,
+        file_type: str = "image",
+        max_edge_override: Optional[int] = None,
+    ) -> str:
         """将本地图片标准化后编码为 data URL，供多模态模型使用。"""
         mime_type, image_bytes = self._prepare_image_payload(
             image_path,
-            max_edge=self._get_multimodal_image_edge(file_type),
+            max_edge=max_edge_override or self._get_multimodal_image_edge(file_type),
         )
         encoded = base64.b64encode(image_bytes).decode("ascii")
 
@@ -256,7 +261,13 @@ class LLMClient:
 
         return mime_type, image_bytes
 
-    def build_multimodal_user_message(self, text: str, image_paths: List[str], file_type: str = "image") -> dict:
+    def build_multimodal_user_message(
+        self,
+        text: str,
+        image_paths: List[str],
+        file_type: str = "image",
+        max_edge_override: Optional[int] = None,
+    ) -> dict:
         """构造 OpenAI-compatible 多模态 user message。"""
         content: list[Any] = [{"type": "text", "text": text}]
 
@@ -264,7 +275,13 @@ class LLMClient:
             content.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": self.encode_image_to_data_url(image_path, file_type=file_type)},
+                    "image_url": {
+                        "url": self.encode_image_to_data_url(
+                            image_path,
+                            file_type=file_type,
+                            max_edge_override=max_edge_override,
+                        )
+                    },
                 }
             )
 
