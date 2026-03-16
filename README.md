@@ -10,7 +10,7 @@
 - Agent 支持工具调用与最多 5 轮连续推理
 - 已实现重复查询拦截、低增益早停与澄清追问
 - 文件搜索基于 Everything HTTP API（含系统垃圾文件过滤）
-- 文本预览支持 25+ 类型与多编码，`.docx` 支持正文纯文字预览
+- 文本预览支持 25+ 类型与多编码，`.docx` 支持正文纯文字预览，`.xlsx` 支持首个非空工作表前若干非空行预览
 - 文件发送为 Mock（仅日志输出，不实际发送）
 
 ## 核心能力
@@ -156,7 +156,7 @@ conda run --no-capture-output -n base python -m test.test_iterative_tool_loop
 
 - `send_file` 目前为 Mock
 - `conversation.py` / `security_gate.py` / `sensitive_sanitizer.py` 仍待落地
-- 多格式预览仍待完善（当前已支持 docx 正文纯文字预览与 PDF 转图预览，xlsx/pptx 仍待实现）
+- 多格式预览仍待完善（当前已支持 docx 正文纯文字预览、xlsx 首个非空工作表文本预览与 PDF 转图预览，pptx 仍待实现）
 
 ## 注意事项
 

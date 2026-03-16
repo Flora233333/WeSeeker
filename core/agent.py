@@ -506,6 +506,12 @@ class Agent:
         if metadata.get("preview_chars"):
             preview_lines.append(f"预览字符数: {metadata['preview_chars']}")
 
+        if metadata.get("preview_sheet"):
+            preview_lines.append(f"预览工作表: {metadata['preview_sheet']}")
+
+        if metadata.get("preview_rows"):
+            preview_lines.append(f"预览行数: {metadata['preview_rows']}")
+
         if metadata.get("total_pages"):
             preview_lines.append(f"总页数: {metadata['total_pages']}")
 

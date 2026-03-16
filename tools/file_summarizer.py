@@ -7,8 +7,10 @@ LLM 调用仍由调用方（Agent）负责。
 """
 
 import os
+import re
 import textwrap
 import tempfile
+from datetime import date, datetime, time
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 
@@ -80,7 +82,7 @@ def build_summary_prompt(content: str, file_type: str, file_name: str) -> str:
         请对以下{file_type_desc}「{file_name}」进行总结。
         总结要求：
         - 先用一句话概括这个文件是什么、关于什么主题
-        - 再用 1-3 句话提炼关键内容
+        - 再用 4-5 句话提炼关键内容
         - {type_hint}
         - 总结控制在 200-300 字以内
         文件内容：
@@ -340,6 +342,139 @@ def _build_text_preview_result(
     }
 
 
+def _build_preview_error_result(
+    file_type: str,
+    preview_method: str,
+    error: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return {
+        "success": False,
+        "file_type": file_type,
+        "preview_method": preview_method,
+        "content": None,
+        "images": None,
+        "metadata": metadata or {},
+        "estimated_tokens": 0,
+        "error": error,
+    }
+
+
+def _clean_inline_whitespace(text: str) -> str:
+    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_excel_cell(value: Any, max_length: int = 120) -> str:
+    if value is None:
+        return ""
+
+    if isinstance(value, datetime):
+        if value.time() == time(0, 0, 0):
+            text = value.strftime("%Y-%m-%d")
+        else:
+            text = value.strftime("%Y-%m-%d %H:%M:%S")
+    elif isinstance(value, date):
+        text = value.strftime("%Y-%m-%d")
+    elif isinstance(value, time):
+        text = value.strftime("%H:%M:%S")
+    else:
+        text = str(value)
+
+    text = _clean_inline_whitespace(text)
+    if len(text) > max_length:
+        text = text[: max_length - 3].rstrip() + "..."
+    return text
+
+
+def _is_effective_excel_row(cells: list[str]) -> bool:
+    return any(cell for cell in cells)
+
+
+def _select_first_non_empty_sheet(workbook, max_rows: int):
+    scan_limit = max(max_rows * 3, 30)
+
+    for sheet_name in workbook.sheetnames:
+        worksheet = workbook[sheet_name]
+        for row_index, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
+            if row_index > scan_limit:
+                break
+            normalized_cells = [_normalize_excel_cell(cell) for cell in row]
+            if _is_effective_excel_row(normalized_cells):
+                return worksheet
+
+    return None
+
+
+def _collect_sheet_preview_rows(worksheet, max_rows: int) -> Tuple[list[list[str]], bool]:
+    preview_rows = []
+
+    for row in worksheet.iter_rows(values_only=True):
+        normalized_cells = [_normalize_excel_cell(cell) for cell in row]
+        if not _is_effective_excel_row(normalized_cells):
+            continue
+
+        trimmed_cells = list(normalized_cells)
+        while trimmed_cells and not trimmed_cells[-1]:
+            trimmed_cells.pop()
+
+        preview_rows.append(trimmed_cells)
+        if len(preview_rows) > max_rows:
+            return _drop_empty_excel_columns(preview_rows[:max_rows]), True
+
+    return _drop_empty_excel_columns(preview_rows), False
+
+
+def _drop_empty_excel_columns(rows: list[list[str]]) -> list[list[str]]:
+    if not rows:
+        return rows
+
+    max_columns = max(len(row) for row in rows)
+    keep_indices = []
+
+    for column_index in range(max_columns):
+        if any(column_index < len(row) and row[column_index] for row in rows):
+            keep_indices.append(column_index)
+
+    if not keep_indices:
+        return rows
+
+    cleaned_rows = []
+    for row in rows:
+        cleaned_rows.append([
+            row[column_index] if column_index < len(row) else ""
+            for column_index in keep_indices
+        ])
+
+    return cleaned_rows
+
+
+def _format_excel_preview_text(
+    file_name: str,
+    sheet_names: list[str],
+    preview_sheet_name: str,
+    preview_rows: list[list[str]],
+) -> str:
+    lines = [
+        f"工作簿: {file_name}",
+        f"Sheet 列表: {', '.join(sheet_names)}",
+        f"当前预览 Sheet: {preview_sheet_name}",
+        "",
+    ]
+
+    for row_index, row_cells in enumerate(preview_rows, start=1):
+        display_cells = [cell if cell else "[空]" for cell in row_cells]
+        line = " | ".join(display_cells)
+        if row_index == 1:
+            lines.append("表头候选:")
+            lines.append(line)
+        else:
+            lines.append(f"第 {row_index} 行:")
+            lines.append(line)
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
 # ============== 各类文件提取器 ==============
 
 def _extract_text(file_path: str, max_chars: int) -> Dict[str, Any]:
@@ -472,21 +607,81 @@ def _extract_docx(file_path: str, max_chars: int) -> Dict[str, Any]:
 
 def _extract_excel(file_path: str, max_rows: int) -> Dict[str, Any]:
     """
-    提取 Excel 表格内容 [接口预留]
+    提取 Excel 表格内容
 
-    支持: .xlsx, .xls
-    TODO: 使用 openpyxl 提取 Sheet 名称列表 + 第一个 Sheet 前 max_rows 行
+    当前仅支持 .xlsx，选择第一个非空 Sheet，提取前 max_rows 条非空行。
     """
-    return {
-        "success": False,
-        "file_type": "excel",
-        "preview_method": "xlsx_reader",
-        "content": None,
-        "images": None,
-        "metadata": {},
-        "estimated_tokens": 0,
-        "error": "Excel 表格预览功能尚未实现"
-    }
+    suffix = Path(file_path).suffix.lower()
+    if suffix == ".xls":
+        return _build_preview_error_result(
+            file_type="excel",
+            preview_method="xlsx_reader",
+            error="当前仅支持 .xlsx 预览，.xls 暂未实现",
+        )
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return _build_preview_error_result(
+            file_type="excel",
+            preview_method="xlsx_reader",
+            error="缺少 openpyxl 依赖，暂时无法预览 Excel 表格",
+        )
+
+    try:
+        workbook = load_workbook(file_path, read_only=True, data_only=True)
+        sheet_names = list(workbook.sheetnames)
+        preview_sheet = _select_first_non_empty_sheet(workbook, max_rows)
+
+        if preview_sheet is None:
+            return _build_preview_error_result(
+                file_type="excel",
+                preview_method="xlsx_reader",
+                error="Excel 中未提取到可预览的非空表格内容，可能是空表或仅包含样式/图表对象",
+                metadata={
+                    "sheet_names": sheet_names,
+                    "sheet_count": len(sheet_names),
+                },
+            )
+
+        preview_rows, has_more = _collect_sheet_preview_rows(preview_sheet, max_rows)
+        if not preview_rows:
+            return _build_preview_error_result(
+                file_type="excel",
+                preview_method="xlsx_reader",
+                error="Excel 中未提取到可预览的非空表格内容，可能是空表或仅包含样式/图表对象",
+                metadata={
+                    "sheet_names": sheet_names,
+                    "sheet_count": len(sheet_names),
+                    "preview_sheet": preview_sheet.title,
+                },
+            )
+
+        preview_text = _format_excel_preview_text(
+            file_name=os.path.basename(file_path),
+            sheet_names=sheet_names,
+            preview_sheet_name=preview_sheet.title,
+            preview_rows=preview_rows,
+        )
+
+        return _build_text_preview_result(
+            file_type="excel",
+            preview_method="xlsx_reader",
+            content=preview_text,
+            has_more=has_more,
+            extra_metadata={
+                "sheet_names": sheet_names,
+                "sheet_count": len(sheet_names),
+                "preview_sheet": preview_sheet.title,
+                "preview_rows": len(preview_rows),
+            },
+        )
+    except Exception as e:
+        return _build_preview_error_result(
+            file_type="excel",
+            preview_method="xlsx_reader",
+            error=f"读取 Excel 文件失败: {str(e)}",
+        )
 
 
 def _extract_pptx(file_path: str, max_pages: int) -> Dict[str, Any]:
@@ -643,7 +838,7 @@ PREVIEW_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "read_file_content",
-        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)、Word 文档(.docx，仅正文纯文字预览)、图片文件(.png/.jpg/.jpeg/.webp/.bmp/.gif)和 PDF 文件；PDF 当前通过前几页截图进行预览总结，Word 暂不处理图片和复杂版式。只能使用 file_index 从搜索结果中选择，避免路径错误。深度 L1/L2/L3 表示预览程度：文本与 Word 默认读取 2000/5000/8000 字，Excel 默认查看 10/50/100 行，PDF 默认查看前 1/2/3 页。",
+        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)、Word 文档(.docx，仅正文纯文字预览)、Excel 表格(.xlsx，提取第一个非空工作表前几行)、图片文件(.png/.jpg/.jpeg/.webp/.bmp/.gif)和 PDF 文件；PDF 当前通过前几页截图进行预览总结，Word 暂不处理图片和复杂版式，Excel 暂不支持 .xls 与复杂图表版式。只能使用 file_index 从搜索结果中选择，避免路径错误。深度 L1/L2/L3 表示预览程度：文本与 Word 默认读取 2000/5000/8000 字，Excel 默认查看 10/50/100 行，PDF 默认查看前 1/2/3 页。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -672,7 +867,7 @@ PREVIEW_TOOL_SCHEMA_FOR_DEBUG = {
     "type": "function",
     "function": {
         "name": "read_file_content",
-        "description": "[FOR_DEBUG] 读取文件内容。支持文本文件、Word 文档(.docx，仅正文纯文字预览)、图片文件和 PDF 文件；仅要求 file_path，适合独立脚本或脱离 Agent 候选文件上下文的调试场景。",
+        "description": "[FOR_DEBUG] 读取文件内容。支持文本文件、Word 文档(.docx，仅正文纯文字预览)、Excel 表格(.xlsx，提取第一个非空工作表前几行)、图片文件和 PDF 文件；仅要求 file_path，适合独立脚本或脱离 Agent 候选文件上下文的调试场景。",
         "parameters": {
             "type": "object",
             "properties": {
