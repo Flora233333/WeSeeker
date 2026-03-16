@@ -324,7 +324,7 @@ sender:
 | 2026-03-10 | `55d73fc` | 配置+清理+文档 | 移除仓库根目录旧版测试/调试脚本的 git 跟踪，仅保留本地 `test/` 目录中的对应脚本；同步更新 `task_background.md`，补记 `134a01e` 的正式归档记录，并调整当前文档维护状态说明。 |
 | 2026-03-11 | 未提交 | 功能+测试+文档+依赖 | 为 `read_file_content` 增加图片文件预览结果协议，接入 `LLMClient` 的多模态图片消息构造与 `Agent` 的图片摘要分支；新增 `test/test_image_preview_multimodal.py`，并引入 `Pillow` 用于图片标准化编码、MPO 兼容和等比例缩放；新增 `settings.yaml` 的多模态图片最长边配置（image=2048、pdf=2105、ppt=3072）；同时补充 `system_prompt_2.md` 的系统目录探索规则，指导模型在“桌面/下载/文档里有没有某类相关文件和文件夹”场景下优先先看一级目录结构；在 conda base 环境下完成编译检查、FakeLLM 测试及真实 LM Studio 图片预览链路验证。 |
 | 2026-03-12 | `805f15f` | 功能+文档+依赖 | 实现 PDF 预览第一版：`tools/file_summarizer.py` 使用 PyMuPDF 将 PDF 前几页渲染为 PNG，并复用现有图片多模态摘要链路；新增 `preview.pdf.depth_pages`（L1/L2/L3 默认 1/2/3 页）与 `preview.pdf.render_scale` 配置，实现预览深度和实际取页/渲染倍率解耦；同时将文本/Excel 的深度阈值也迁移到 `settings.yaml -> preview`（文本 2000/5000/8000 字，Excel 10/50/100 行）；为 PDF/PPT 图片摘要增加失败后的自动降采样重试，修复部分高分辨率 PDF 页面在 LM Studio 中 `failed to process image` 的问题；同步更新 `system_prompt_2.md`、`requirements.txt` 与 `task_background.md`。 |
-| 2026-03-16 | 未提交 | 功能+测试+文档+依赖 | 为 `read_file_content` 实现 `.docx` 正文纯文字预览，复用现有文本深度与摘要链路；空白文档或主要由图片/复杂对象组成的 Word 文档返回显式错误；新增 `python-docx` 依赖与 `test/test_docx_preview.py`，并使用 `C:\Users\Flora\Desktop\Blade_det prj\总体设计.docx` 完成 base 环境实测。 |
+| 2026-03-16 | `4c17655` | 功能+测试+文档+依赖 | 为 `read_file_content` 实现 `.docx` 正文纯文字预览，复用现有文本深度与摘要链路；空白文档或主要由图片/复杂对象组成的 Word 文档返回显式错误；新增 `python-docx` 依赖与 `test/test_docx_preview.py`，并使用 `C:\Users\Flora\Desktop\Blade_det prj\总体设计.docx` 完成 base 环境实测。 |
 
 ---
 
