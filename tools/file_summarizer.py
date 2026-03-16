@@ -686,21 +686,185 @@ def _extract_excel(file_path: str, max_rows: int) -> Dict[str, Any]:
 
 def _extract_pptx(file_path: str, max_pages: int) -> Dict[str, Any]:
     """
-    提取 PPT 演示文稿内容 [接口预留]
+    提取 PPT 演示文稿内容
 
-    支持: .pptx
-    TODO: 使用 python-pptx 提取幻灯片标题列表 + 前 max_pages 页转为图片
+    当前优先使用 PowerPoint COM 导出前若干页截图；
+    若运行环境缺少 pywin32，则退回 python-pptx 做文字提取。
     """
-    return {
-        "success": False,
-        "file_type": "ppt",
-        "preview_method": "pptx_previewer",
-        "content": None,
-        "images": None,
-        "metadata": {},
-        "estimated_tokens": 0,
-        "error": "PPT 预览功能尚未实现"
-    }
+    try:
+        import pythoncom
+        import win32com.client as win32
+        return _extract_pptx_via_com(file_path, max_pages, pythoncom, win32)
+    except ImportError:
+        return _extract_pptx_via_python_pptx(file_path, max_pages)
+    except Exception as com_error:
+        fallback_result = _extract_pptx_via_python_pptx(file_path, max_pages)
+        if fallback_result.get("success"):
+            fallback_result.setdefault("metadata", {})["com_fallback_reason"] = str(com_error)
+            fallback_result["metadata"]["preview_note"] = "当前未使用 PowerPoint 导出截图，已退回到 python-pptx 文本提取预览。"
+            return fallback_result
+
+        return _build_preview_error_result(
+            file_type="ppt",
+            preview_method="pptx_previewer",
+            error=(
+                "PPT 预览失败：PowerPoint COM 导出不可用，且 python-pptx 文本提取也失败。"
+                f" COM 错误: {str(com_error)}；回退错误: {fallback_result.get('error', '未知错误')}"
+            ),
+        )
+
+
+def _extract_pptx_via_com(file_path: str, max_pages: int, pythoncom, win32) -> Dict[str, Any]:
+    app = None
+    presentation = None
+    temp_dir = None
+
+    try:
+        pythoncom.CoInitialize()
+        temp_dir = Path(tempfile.mkdtemp(prefix="weseeker_ppt_"))
+        app = win32.DispatchEx("PowerPoint.Application")
+        app.Visible = 1
+
+        try:
+            app.WindowState = 2
+        except Exception:
+            pass
+
+        presentation = app.Presentations.Open(
+            os.path.abspath(file_path),
+            ReadOnly=1,
+            Untitled=0,
+            WithWindow=0,
+        )
+
+        total_pages = presentation.Slides.Count
+        if total_pages == 0:
+            return _build_preview_error_result(
+                file_type="ppt",
+                preview_method="ppt_slide_images",
+                error="PPT 没有可预览的幻灯片",
+            )
+
+        preview_pages = min(max_pages, total_pages)
+        image_paths = []
+
+        for slide_index in range(1, preview_pages + 1):
+            slide = presentation.Slides(slide_index)
+            image_path = temp_dir / f"slide_{slide_index}.png"
+            slide.Export(str(image_path), "PNG")
+            if not image_path.exists():
+                raise RuntimeError(f"第 {slide_index} 页导出失败")
+            image_paths.append(str(image_path))
+
+        return {
+            "success": True,
+            "file_type": "ppt",
+            "preview_method": "ppt_slide_images",
+            "content": None,
+            "images": image_paths,
+            "metadata": {
+                "file_name": os.path.basename(file_path),
+                "total_pages": total_pages,
+                "preview_pages": preview_pages,
+                "image_count": len(image_paths),
+                "image_paths": image_paths,
+                "temp_dir": str(temp_dir),
+                "has_more": total_pages > preview_pages,
+                "preview_note": "已使用 PowerPoint COM 导出前几页幻灯片截图。",
+            },
+            "estimated_tokens": 0,
+            "error": None,
+        }
+    finally:
+        if presentation is not None:
+            try:
+                presentation.Close()
+            except Exception:
+                pass
+        if app is not None:
+            try:
+                app.Quit()
+            except Exception:
+                pass
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
+
+
+def _extract_pptx_via_python_pptx(file_path: str, max_pages: int) -> Dict[str, Any]:
+    try:
+        from pptx import Presentation
+    except ImportError:
+        return _build_preview_error_result(
+            file_type="ppt",
+            preview_method="ppt_text_fallback",
+            error="缺少 pywin32 与 python-pptx 依赖，暂时无法预览 PPT",
+        )
+
+    try:
+        presentation = Presentation(file_path)
+        total_pages = len(presentation.slides)
+        if total_pages == 0:
+            return _build_preview_error_result(
+                file_type="ppt",
+                preview_method="ppt_text_fallback",
+                error="PPT 没有可预览的幻灯片",
+            )
+
+        preview_pages = min(max_pages, total_pages)
+        slide_blocks = []
+
+        slides = list(presentation.slides)
+        for slide_index, slide in enumerate(slides[:preview_pages], start=1):
+            text_items = []
+            for shape in slide.shapes:
+                shape_text = getattr(shape, "text", None)
+                if shape_text is None:
+                    continue
+                text = _clean_inline_whitespace(shape_text)
+                if text:
+                    text_items.append(text)
+
+            if not text_items:
+                continue
+
+            slide_blocks.append(f"第 {slide_index} 页:")
+            slide_blocks.extend(text_items[:12])
+            slide_blocks.append("")
+
+        if not slide_blocks:
+            return _build_preview_error_result(
+                file_type="ppt",
+                preview_method="ppt_text_fallback",
+                error="PPT 中未提取到可预览的文字内容，当前环境又无法导出幻灯片截图",
+            )
+
+        content = "\n".join([
+            f"演示文稿: {os.path.basename(file_path)}",
+            f"总页数: {total_pages}",
+            f"当前预览页数: {preview_pages}",
+            "",
+            *slide_blocks,
+        ]).strip()
+
+        return _build_text_preview_result(
+            file_type="ppt",
+            preview_method="ppt_text_fallback",
+            content=content,
+            has_more=total_pages > preview_pages,
+            extra_metadata={
+                "total_pages": total_pages,
+                "preview_pages": preview_pages,
+                "preview_note": "当前未使用 PowerPoint 导出截图，已退回到 python-pptx 文本提取预览。",
+            },
+        )
+    except Exception as e:
+        return _build_preview_error_result(
+            file_type="ppt",
+            preview_method="ppt_text_fallback",
+            error=f"读取 PPT 失败: {str(e)}",
+        )
 
 
 def _extract_pdf(file_path: str, max_pages: int) -> Dict[str, Any]:
@@ -838,7 +1002,7 @@ PREVIEW_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "read_file_content",
-        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)、Word 文档(.docx，仅正文纯文字预览)、Excel 表格(.xlsx，提取第一个非空工作表前几行)、图片文件(.png/.jpg/.jpeg/.webp/.bmp/.gif)和 PDF 文件；PDF 当前通过前几页截图进行预览总结，Word 暂不处理图片和复杂版式，Excel 暂不支持 .xls 与复杂图表版式。只能使用 file_index 从搜索结果中选择，避免路径错误。深度 L1/L2/L3 表示预览程度：文本与 Word 默认读取 2000/5000/8000 字，Excel 默认查看 10/50/100 行，PDF 默认查看前 1/2/3 页。",
+        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)、Word 文档(.docx，仅正文纯文字预览)、Excel 表格(.xlsx，提取第一个非空工作表前几行)、PPT 演示文稿(.pptx，优先导出前几页截图，缺少 pywin32 时退回文字提取)、图片文件(.png/.jpg/.jpeg/.webp/.bmp/.gif)和 PDF 文件；PDF 当前通过前几页截图进行预览总结，Word 暂不处理图片和复杂版式，Excel 暂不支持 .xls 与复杂图表版式。只能使用 file_index 从搜索结果中选择，避免路径错误。深度 L1/L2/L3 表示预览程度：文本与 Word 默认读取 2000/5000/8000 字，Excel 默认查看 10/50/100 行，PPT/PDF 默认查看前 1/2/3 页。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -867,7 +1031,7 @@ PREVIEW_TOOL_SCHEMA_FOR_DEBUG = {
     "type": "function",
     "function": {
         "name": "read_file_content",
-        "description": "[FOR_DEBUG] 读取文件内容。支持文本文件、Word 文档(.docx，仅正文纯文字预览)、Excel 表格(.xlsx，提取第一个非空工作表前几行)、图片文件和 PDF 文件；仅要求 file_path，适合独立脚本或脱离 Agent 候选文件上下文的调试场景。",
+        "description": "[FOR_DEBUG] 读取文件内容。支持文本文件、Word 文档(.docx，仅正文纯文字预览)、Excel 表格(.xlsx，提取第一个非空工作表前几行)、PPT 演示文稿(.pptx，优先导出前几页截图，缺少 pywin32 时退回文字提取)、图片文件和 PDF 文件；仅要求 file_path，适合独立脚本或脱离 Agent 候选文件上下文的调试场景。",
         "parameters": {
             "type": "object",
             "properties": {

@@ -69,12 +69,12 @@ WeSeeker 唯寻是一个运行在 Windows PC 上的**智能文件管家 Agent**�
 | LLM 调用 | OpenAI SDK（兼容 LM Studio / Ollama / 云端 API） | 使用中 |
 | 文件搜索 | Everything HTTP API（localhost:8080） | 使用中 |
 | 配置管理 | PyYAML（config/settings.yaml） | 使用中 |
-| 文件预览 | python-pptx / python-docx / PyMuPDF / openpyxl / Pillow | `python-docx` / `openpyxl` / Pillow / PyMuPDF 已使用，其他未引入 |
+| 文件预览 | python-pptx / python-docx / PyMuPDF / openpyxl / Pillow / pywin32 | `python-docx` / `openpyxl` / `python-pptx` / Pillow / PyMuPDF / `pywin32` 已使用 |
 | 日志 | loguru | 未引入 |
 | 数据持久化 | SQLite | 未引入 |
 | 消息监听 | 微信/飞书接口 | 未引入 |
 
-当前 requirements.txt 有 7 个依赖：`openai`, `requests`, `pyyaml`, `Pillow`, `PyMuPDF`, `python-docx`, `openpyxl`
+当前 requirements.txt 有 9 个依赖：`openai`, `requests`, `pyyaml`, `Pillow`, `PyMuPDF`, `python-docx`, `openpyxl`, `pywin32`, `python-pptx`
 
 ---
 
@@ -105,7 +105,7 @@ WeSeeker/
 ├── tools/
 │   ├── everything_search.py           # Everything 搜索（~263行）      ✅ 已实现
 │   ├── file_sender.py                 # 文件发送（~95行）              ⚠️ Mock 实现
-│   ├── file_summarizer.py             # 文件预览（~369行）             ⚠️ 文本/图片/PDF/Docx纯文字/Xlsx文本化
+│   ├── file_summarizer.py             # 文件预览（~369行）             ⚠️ 文本/图片/PDF/Docx/Xlsx/Ppt轻量预览
 │   ├── folder_lister.py               # 文件夹直属内容列举              ✅ 已实现（新增）
 │   ├── file_inspector.py              # 文件元信息                      ❌ 空壳
 │   └── path_resolver.py               # 路径智能解析                    ❌ 空壳
@@ -185,6 +185,7 @@ WeSeeker/
 28. **PDF 图片处理失败自动降级重试** — 针对部分 PDF 页面在高分辨率下会触发 LM Studio `failed to process image` 的情况，`Agent._summarize_images()` 现对 PDF/PPT 图片摘要增加按最长边 `默认值 -> 1792 -> 1536 -> 1024` 的自动重试；在当前 `pdf image_max_edge=2048` 配置下，实际生效链路即 `2048 -> 1792 -> 1536 -> 1024`，优先保留 `render_scale=3.0` 的清晰渲染，同时在模型侧失败时自动降采样兜底；已用 `人工智能在烟花爆竹生产中的应用\1.pdf` 的 L3 三页预览真实验证通过。
 29. **DOCX 正文纯文字预览** — `read_file_content` 现已支持 `.docx` 的正文段落文字提取，复用现有文本深度与摘要链路；当前仅处理纯文字段落，不处理图片、文本框、页眉页脚等复杂对象，若文档为空或主要由图片组成则返回显式错误提示。
 30. **XLSX 首个非空工作表预览** — `read_file_content` 现已支持 `.xlsx`：基于 `openpyxl` 选择首个存在有效内容的工作表，提取前 `L1/L2/L3 = 10/50/100` 条非空行并做基础去噪（清理空行、收缩空白、裁剪超长单元格、移除全空列）；若全部工作表都为空或仅含样式/图表对象，则返回显式空表错误；当前 `.xls` 仍未支持。
+31. **PPT 轻量预览第一版** — `read_file_content` 现已支持 `.pptx`：优先通过 PowerPoint COM 导出前 `L1/L2/L3 = 1/2/3` 页幻灯片截图，并复用现有图片多模态摘要链路；若环境缺少 `pywin32` 或 COM 导出失败，则退回 `python-pptx` 提取前几页文字内容；若两条路径都不可用则返回显式错误。
 
 ### 已实现但为 Mock
 
@@ -213,7 +214,7 @@ WeSeeker/
 | **P0** | tool prompt 动态加载 | 实现调用工具前新开上下文、加载对应 tool_prompt 的机制 |
 | **P0** | security_gate.py | 工具白名单校验、危险操作拦截、路径安全检查 |
 | **P0** | sensitive_sanitizer.py | 正则脱敏（API Key/密码/Token/私钥/连接串） |
-| **P1** | 多格式文件预览 | 完善 `_extract_docx` / `_extract_excel` 的复杂对象支持，并实现 `_extract_pptx` |
+| **P1** | 多格式文件预览 | 完善 `_extract_docx` / `_extract_excel` / `_extract_pptx` 的复杂对象与稳定性支持 |
 | **P1** | 搜索增强 | file_type 参数、sort_by 排序、分页翻页、搜索会话缓存 |
 | **P1** | 修复失效测试 | 更新 test_search.py / test_full_workflow.py / test_preview_full.py |
 | **P2** | conversation.py | 1 小时时间窗口、任务生命周期管理、消息清理 |
@@ -327,6 +328,7 @@ sender:
 | 2026-03-12 | `805f15f` | 功能+文档+依赖 | 实现 PDF 预览第一版：`tools/file_summarizer.py` 使用 PyMuPDF 将 PDF 前几页渲染为 PNG，并复用现有图片多模态摘要链路；新增 `preview.pdf.depth_pages`（L1/L2/L3 默认 1/2/3 页）与 `preview.pdf.render_scale` 配置，实现预览深度和实际取页/渲染倍率解耦；同时将文本/Excel 的深度阈值也迁移到 `settings.yaml -> preview`（文本 2000/5000/8000 字，Excel 10/50/100 行）；为 PDF/PPT 图片摘要增加失败后的自动降采样重试，修复部分高分辨率 PDF 页面在 LM Studio 中 `failed to process image` 的问题；同步更新 `system_prompt_2.md`、`requirements.txt` 与 `task_background.md`。 |
 | 2026-03-16 | `4c17655` | 功能+测试+文档+依赖 | 为 `read_file_content` 实现 `.docx` 正文纯文字预览，复用现有文本深度与摘要链路；空白文档或主要由图片/复杂对象组成的 Word 文档返回显式错误；新增 `python-docx` 依赖与 `test/test_docx_preview.py`，并使用 `C:\Users\Flora\Desktop\Blade_det prj\总体设计.docx` 完成 base 环境实测。 |
 | 2026-03-16 | 未提交 | 功能+测试+文档+依赖 | 为 `read_file_content` 实现 `.xlsx` 预览第一版：基于 `openpyxl` 自动选择首个非空工作表，提取前若干非空行并做基础去噪，同时对全空工作簿返回显式错误；新增 `openpyxl` 依赖与 `test/test_xlsx_preview.py`，并使用 `C:\Users\Flora\Desktop\研一\副本支部花名册.xlsx` 完成 base 环境实测。 |
+| 2026-03-16 | 未提交 | 功能+文档+依赖 | 为 `read_file_content` 实现 `.pptx` 轻量预览第一版：优先使用 PowerPoint COM 导出前几页截图并复用现有图片摘要链路，若缺少 `pywin32` 或 COM 导出失败则退回 `python-pptx` 文字提取；新增 `pywin32`、`python-pptx` 依赖，并同步更新 prompt、README 与 `task_background.md`。 |
 
 ---
 

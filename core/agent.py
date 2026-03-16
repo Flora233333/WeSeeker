@@ -4,6 +4,7 @@ Agent 主循环
 """
 
 import os
+import shutil
 import warnings
 from typing import Optional, List, Dict, Set, Any, Tuple
 from core.entities import (
@@ -81,6 +82,7 @@ class Agent:
         self.tools = [spec.schema for spec in self.tool_specs]
         self.tool_functions = {spec.name: spec.handler for spec in self.tool_specs}
         self.pending_error_event: Optional[ErrorEvent] = None
+        self.temp_dirs_to_cleanup: Set[str] = set()
 
         # 候选文件缓存（用于用户确认发送）
         self.candidate_files: List[Dict] = []
@@ -489,7 +491,52 @@ class Agent:
             return f"预览出错: {str(e)}"
 
     def _extract_preview_data(self, file_path: str, depth: str) -> Dict[str, Any]:
-        return read_file_content(file_path, depth=depth)
+        result = read_file_content(file_path, depth=depth)
+        self._register_temp_artifacts(result)
+        return result
+
+    def _register_temp_artifacts(self, result: Dict[str, Any]) -> None:
+        metadata = result.get("metadata") or {}
+        temp_dir = metadata.get("temp_dir")
+        if not isinstance(temp_dir, str) or not temp_dir:
+            return
+
+        normalized = os.path.normcase(os.path.abspath(temp_dir))
+        temp_root = os.path.normcase(os.path.abspath(os.getenv("TEMP") or os.getenv("TMP") or os.path.dirname(temp_dir)))
+        dir_name = os.path.basename(normalized)
+        allowed_prefixes = ("weseeker_pdf_", "weseeker_ppt_")
+
+        if not os.path.isdir(normalized):
+            return
+        if os.path.dirname(normalized) != temp_root:
+            return
+        if not dir_name.startswith(allowed_prefixes):
+            return
+
+        self.temp_dirs_to_cleanup.add(normalized)
+
+    def cleanup_temp_artifacts(self) -> None:
+        for temp_dir in list(self.temp_dirs_to_cleanup):
+            try:
+                normalized = os.path.normcase(os.path.abspath(temp_dir))
+                temp_root = os.path.normcase(os.path.abspath(os.getenv("TEMP") or os.getenv("TMP") or os.path.dirname(normalized)))
+                dir_name = os.path.basename(normalized)
+
+                if not os.path.isdir(normalized):
+                    self.temp_dirs_to_cleanup.discard(temp_dir)
+                    continue
+                if os.path.dirname(normalized) != temp_root:
+                    continue
+                if not dir_name.startswith(("weseeker_pdf_", "weseeker_ppt_")):
+                    continue
+
+                shutil.rmtree(normalized, ignore_errors=False)
+                self.temp_dirs_to_cleanup.discard(temp_dir)
+            except FileNotFoundError:
+                self.temp_dirs_to_cleanup.discard(temp_dir)
+            except Exception as e:
+                if self.debug:
+                    warnings.warn(f"cleanup_temp_artifacts_failed: {temp_dir} ({e})", RuntimeWarning)
 
     def _render_preview_response(self, file_path: str, result: Dict[str, Any]) -> str:
         file_type = result.get("file_type", "unknown")
@@ -511,6 +558,9 @@ class Agent:
 
         if metadata.get("preview_rows"):
             preview_lines.append(f"预览行数: {metadata['preview_rows']}")
+
+        if metadata.get("preview_note"):
+            preview_lines.append(f"说明: {metadata['preview_note']}")
 
         if metadata.get("total_pages"):
             preview_lines.append(f"总页数: {metadata['total_pages']}")
