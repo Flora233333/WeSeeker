@@ -519,7 +519,7 @@ class Agent:
             preview_lines.append("\n📋 内容摘要:\n")
             summary = self._summarize_content(content, file_type, os.path.basename(file_path))
             preview_lines.append(summary)
-            preview_lines.append(f"\n📄 内容片段（前1000字符）:\n```\n{content[:1000]}\n```")
+            # preview_lines.append(f"\n📄 内容片段（前1000字符）:\n```\n{content[:1000]}\n```")
         elif images:
             preview_lines.append("\n🖼️ 图片摘要:\n")
             summary = self._summarize_images(images, file_type, os.path.basename(file_path), metadata)

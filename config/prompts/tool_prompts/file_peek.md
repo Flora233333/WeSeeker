@@ -49,11 +49,12 @@ file_index 和 file_path 二选一，优先使用 file_index：
 ### 当前可预览（文本类）
 .txt, .md, .markdown, .py, .js, .java, .c, .cpp, .h, .hpp, .json, .yaml, .yml, .xml, .html, .htm, .css, .sql, .log, .ini, .conf, .cfg, .sh, .bat, .ps1, .csv
 
+### 当前部分支持预览
+- Word (.docx) — 当前仅提取正文纯文字；如果文档为空、或主要由图片/复杂对象组成，则返回无法提取正文文字
+
 ### 暂不支持预览
-- Word (.docx) — 返回"Word 文档预览功能尚未实现"
 - Excel (.xlsx/.xls) — 返回"Excel 表格预览功能尚未实现"
 - PPT (.pptx) — 返回"PPT 预览功能尚未实现"
-- PDF (.pdf) — 返回"PDF 预览功能尚未实现"
 - 二进制文件 — 仅返回文件元信息（大小、修改时间）
 
 当遇到暂不支持的格式时，如实告知用户：

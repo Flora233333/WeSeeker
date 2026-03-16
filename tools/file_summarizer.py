@@ -9,7 +9,7 @@ LLM 调用仍由调用方（Agent）负责。
 import os
 import textwrap
 import tempfile
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 
 import fitz
@@ -308,6 +308,38 @@ def _estimate_tokens(text: str) -> int:
     return int(chinese_chars * 1.5 + other_chars * 0.5)
 
 
+def _truncate_preview_content(content: str, max_chars: int) -> Tuple[str, bool]:
+    if len(content) <= max_chars:
+        return content, False
+    return content[:max_chars], True
+
+
+def _build_text_preview_result(
+    file_type: str,
+    preview_method: str,
+    content: str,
+    has_more: bool,
+    extra_metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    metadata = {
+        "preview_chars": len(content),
+        "has_more": has_more,
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+
+    return {
+        "success": True,
+        "file_type": file_type,
+        "preview_method": preview_method,
+        "content": content,
+        "images": None,
+        "metadata": metadata,
+        "estimated_tokens": _estimate_tokens(content),
+        "error": None,
+    }
+
+
 # ============== 各类文件提取器 ==============
 
 def _extract_text(file_path: str, max_chars: int) -> Dict[str, Any]:
@@ -343,25 +375,15 @@ def _extract_text(file_path: str, max_chars: int) -> Dict[str, Any]:
                 "error": "无法识别文件编码"
             }
 
-        # 判断是否截断
-        is_truncated = len(content) > max_chars
-        if is_truncated:
-            content = content[:max_chars]
+        content, is_truncated = _truncate_preview_content(content, max_chars)
 
-        return {
-            "success": True,
-            "file_type": "text",
-            "preview_method": "text_reader",
-            "content": content,
-            "images": None,
-            "metadata": {
-                "preview_chars": len(content),
-                "has_more": is_truncated,
-                "encoding": used_encoding,
-            },
-            "estimated_tokens": _estimate_tokens(content),
-            "error": None
-        }
+        return _build_text_preview_result(
+            file_type="text",
+            preview_method="text_reader",
+            content=content,
+            has_more=is_truncated,
+            extra_metadata={"encoding": used_encoding},
+        )
 
     except Exception as e:
         return {
@@ -378,21 +400,74 @@ def _extract_text(file_path: str, max_chars: int) -> Dict[str, Any]:
 
 def _extract_docx(file_path: str, max_chars: int) -> Dict[str, Any]:
     """
-    提取 Word 文档内容 [接口预留]
+    提取 Word 文档纯文字内容
 
     支持: .docx
-    TODO: 使用 python-docx 提取标题列表 + 正文前 max_chars 字符
+    当前仅提取段落中的纯文字，不处理图片、文本框、页眉页脚等复杂对象。
     """
-    return {
-        "success": False,
-        "file_type": "word",
-        "preview_method": "docx_reader",
-        "content": None,
-        "images": None,
-        "metadata": {},
-        "estimated_tokens": 0,
-        "error": "Word 文档预览功能尚未实现"
-    }
+    try:
+        from docx import Document
+    except ImportError:
+        return {
+            "success": False,
+            "file_type": "word",
+            "preview_method": "docx_reader",
+            "content": None,
+            "images": None,
+            "metadata": {},
+            "estimated_tokens": 0,
+            "error": "缺少 python-docx 依赖，暂时无法预览 Word 文档",
+        }
+
+    try:
+        document = Document(file_path)
+        paragraph_texts = []
+        non_empty_paragraphs = 0
+
+        for paragraph in document.paragraphs:
+            text = paragraph.text.strip()
+            if not text:
+                continue
+            paragraph_texts.append(text)
+            non_empty_paragraphs += 1
+
+        if not paragraph_texts:
+            return {
+                "success": False,
+                "file_type": "word",
+                "preview_method": "docx_reader",
+                "content": None,
+                "images": None,
+                "metadata": {
+                    "paragraph_count": 0,
+                },
+                "estimated_tokens": 0,
+                "error": "Word 文档中未提取到可预览的正文文字，可能是空白文档或主要由图片组成",
+            }
+
+        full_content = "\n\n".join(paragraph_texts)
+        content, is_truncated = _truncate_preview_content(full_content, max_chars)
+
+        return _build_text_preview_result(
+            file_type="word",
+            preview_method="docx_reader",
+            content=content,
+            has_more=is_truncated,
+            extra_metadata={
+                "paragraph_count": non_empty_paragraphs,
+            },
+        )
+    except Exception as e:
+        return {
+            "success": False,
+            "file_type": "word",
+            "preview_method": "docx_reader",
+            "content": None,
+            "images": None,
+            "metadata": {},
+            "estimated_tokens": 0,
+            "error": f"读取 Word 文档失败: {str(e)}",
+        }
 
 
 def _extract_excel(file_path: str, max_rows: int) -> Dict[str, Any]:
@@ -568,7 +643,7 @@ PREVIEW_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "read_file_content",
-        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)、图片文件(.png/.jpg/.jpeg/.webp/.bmp/.gif)和 PDF 文件；PDF 当前通过前几页截图进行预览总结。只能使用 file_index 从搜索结果中选择，避免路径错误。深度 L1/L2/L3 表示预览程度：文本默认读取 2000/5000/8000 字，Excel 默认查看 10/50/100 行，PDF 默认查看前 1/2/3 页。",
+        "description": "读取文件内容。支持文本文件(.txt/.md/.py/.json等)、Word 文档(.docx，仅正文纯文字预览)、图片文件(.png/.jpg/.jpeg/.webp/.bmp/.gif)和 PDF 文件；PDF 当前通过前几页截图进行预览总结，Word 暂不处理图片和复杂版式。只能使用 file_index 从搜索结果中选择，避免路径错误。深度 L1/L2/L3 表示预览程度：文本与 Word 默认读取 2000/5000/8000 字，Excel 默认查看 10/50/100 行，PDF 默认查看前 1/2/3 页。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -597,7 +672,7 @@ PREVIEW_TOOL_SCHEMA_FOR_DEBUG = {
     "type": "function",
     "function": {
         "name": "read_file_content",
-        "description": "[FOR_DEBUG] 读取文件内容。仅要求 file_path，适合独立脚本或脱离 Agent 候选文件上下文的调试场景。",
+        "description": "[FOR_DEBUG] 读取文件内容。支持文本文件、Word 文档(.docx，仅正文纯文字预览)、图片文件和 PDF 文件；仅要求 file_path，适合独立脚本或脱离 Agent 候选文件上下文的调试场景。",
         "parameters": {
             "type": "object",
             "properties": {
