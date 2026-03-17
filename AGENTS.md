@@ -7,7 +7,7 @@
 ## 1. 环境要求
 
 - **Python**: 3.8+
-- **运行时环境**: conda base 环境 (`conda activate base`)
+- **运行时环境**: conda `weseeker` 环境 (`conda activate weseeker`)
 - **依赖安装**: `pip install -r requirements.txt`
 - **Everything**: 需开启 HTTP 服务（默认端口 8080）
 
@@ -29,23 +29,28 @@ python main.py -d
 ### 2.2 测试运行
 
 ```bash
-# 使用 conda base 环境运行测试（必需）
-conda run --no-capture-output -n base python -m test.test_iterative_tool_loop
+# 使用 conda weseeker 环境运行测试（必需）
+conda run --no-capture-output -n weseeker python -m test.test_iterative_tool_loop
+
+# 独立 RAG 检索链路验证
+conda run --no-capture-output -n weseeker python main_rag.py list-kb
+conda run --no-capture-output -n weseeker python main_rag.py index --kb study --force
+conda run --no-capture-output -n weseeker python main_rag.py search --kb study --query "RAG hybrid search rerank"
 
 # 运行单个测试文件
-conda run --no-capture-output -n base python -m test.test_real_fallback_e2e
+conda run --no-capture-output -n weseeker python -m test.test_real_fallback_e2e
 
 # 其他常用测试
-conda run --no-capture-output -n base python -m test.test_everything_timestamp
-conda run --no-capture-output -n base python -m test.test_filter
-conda run --no-capture-output -n base python -m test.test_preview
-conda run --no-capture-output -n base python -m test.test_search
+conda run --no-capture-output -n weseeker python -m test.test_everything_timestamp
+conda run --no-capture-output -n weseeker python -m test.test_filter
+conda run --no-capture-output -n weseeker python -m test.test_preview
+conda run --no-capture-output -n weseeker python -m test.test_search
 
 # 轻量语法检查
 python -m compileall core tools test main.py
 ```
 
-> **注意**: 测试必须在 conda base 环境中运行，因为只有 base 环境安装了项目依赖。
+> **注意**: 测试必须在 conda `weseeker` 环境中运行，因为当前依赖和 RAG 链路已在该环境验证；独立 RAG 检索默认使用 `settings.yaml -> rag.embedding` 中配置的 LM Studio embedding 模型。
 
 ---
 
@@ -246,7 +251,7 @@ paths:
 1. 阅读 `task_background.md` 了解项目当前进度
 2. 阅读 `WeSeeker-唯寻_技术大纲.md` 了解完整设计
 3. 修改代码后更新 `task_background.md` 的相关章节
-4. 使用 `conda run --no-capture-output -n base python <test>` 验证
+4. 使用 `conda run --no-capture-output -n weseeker python <test>` 验证
 5. 若涉及工具架构重构，可参考 `doc/tool_class_refactor.md` 与 `doc/tool_class_refactor_plan_zh.md`
 
 ---

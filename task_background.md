@@ -1,7 +1,7 @@
 # WeSeeker 唯寻 — 项目任务背景
 
 > 本文件是新会话的上下文载入口，用于快速了解项目现状。请持续维护。
-> 最后更新：2026-03-16
+> 最后更新：2026-03-18
 
 ---
 
@@ -68,13 +68,15 @@ WeSeeker 唯寻是一个运行在 Windows PC 上的**智能文件管家 Agent**�
 | 语言 | Python 3.8+ | 使用中 |
 | LLM 调用 | OpenAI SDK（兼容 LM Studio / Ollama / 云端 API） | 使用中 |
 | 文件搜索 | Everything HTTP API（localhost:8080） | 使用中 |
+| 向量检索 | ChromaDB（目录级知识库） | ✅ 已在 `weseeker` 环境验证 |
+| Embedding | LM Studio Embeddings API（Qwen3-Embedding-0.6B-GGUF） | ✅ 已接入并验证 |
 | 配置管理 | PyYAML（config/settings.yaml） | 使用中 |
 | 文件预览 | python-pptx / python-docx / PyMuPDF / openpyxl / Pillow / pywin32 | `python-docx` / `openpyxl` / `python-pptx` / Pillow / PyMuPDF / `pywin32` 已使用 |
 | 日志 | loguru | 未引入 |
 | 数据持久化 | SQLite | 未引入 |
 | 消息监听 | 微信/飞书接口 | 未引入 |
 
-当前 requirements.txt 有 9 个依赖：`openai`, `requests`, `pyyaml`, `Pillow`, `PyMuPDF`, `python-docx`, `openpyxl`, `pywin32`, `python-pptx`
+当前 requirements.txt 有 10 个依赖：`openai`, `requests`, `pyyaml`, `Pillow`, `PyMuPDF`, `python-docx`, `openpyxl`, `pywin32`, `python-pptx`, `chromadb`
 
 ---
 
@@ -107,8 +109,21 @@ WeSeeker/
 │   ├── file_sender.py                 # 文件发送（~95行）              ⚠️ Mock 实现
 │   ├── file_summarizer.py             # 文件预览（~369行）             ⚠️ 文本/图片/PDF/Docx/Xlsx/Ppt轻量预览
 │   ├── folder_lister.py               # 文件夹直属内容列举              ✅ 已实现（新增）
+│   ├── search_knowledge.py            # 目录级知识库检索工具接口         ✅ 已实现（新增，未接入主 Agent）
 │   ├── file_inspector.py              # 文件元信息                      ❌ 空壳
 │   └── path_resolver.py               # 路径智能解析                    ❌ 空壳
+├── rag/
+│   ├── knowledge_base_registry.py     # 知识库注册与别名解析            ✅ 已实现（新增）
+│   ├── manifest_store.py              # 索引增量清单                    ✅ 已实现（新增）
+│   ├── extractors.py                  # 文档原文提取                    ✅ 已实现（新增）
+│   ├── chunker.py                     # 文本切块与证据摘要              ✅ 已实现（新增）
+│   ├── embeddings.py                  # embedding 提供商封装（local_hash / LM Studio） ✅ 已实现（新增）
+│   ├── vector_store.py                # ChromaDB 封装                   ✅ 已实现（新增）
+│   ├── retriever.py                   # chunk 召回                      ✅ 已实现（新增）
+│   ├── reranker.py                    # chunk 重排                      ✅ 已实现（新增）
+│   ├── aggregator.py                  # chunk→file 聚合                 ✅ 已实现（新增）
+│   ├── indexer.py                     # 全量/增量建库                   ✅ 已实现（新增）
+│   └── service.py                     # RAG 检索编排                    ✅ 已实现（新增）
 ├── doc/
 │   ├── terminal_trace_design.md       # 终端追踪初版设计（基于动态加载前提）
 │   ├── terminal_trace_design_v2.md    # 终端追踪分阶段实施版（V1/V2）
@@ -123,6 +138,7 @@ WeSeeker/
 │   ├── db.py                          # SQLite 持久化                   ❌ 空壳
 │   └── models.py                      # 数据模型                        ❌ 空壳
 ├── main.py                            # CLI 入口                        ✅ 已实现
+├── main_rag.py                        # 独立 RAG 测试入口               ✅ 已实现（新增）
 ├── test/
 │   ├── test_iterative_tool_loop.py    # 连续工具推理与默认兜底文案测试（FakeLLM）
 │   ├── test_real_fallback_e2e.py      # 真实 LLM API 澄清/兜底 E2E（可注入澄清失败）
@@ -186,12 +202,15 @@ WeSeeker/
 29. **DOCX 正文纯文字预览** — `read_file_content` 现已支持 `.docx` 的正文段落文字提取，复用现有文本深度与摘要链路；当前仅处理纯文字段落，不处理图片、文本框、页眉页脚等复杂对象，若文档为空或主要由图片组成则返回显式错误提示。
 30. **XLSX 首个非空工作表预览** — `read_file_content` 现已支持 `.xlsx`：基于 `openpyxl` 选择首个存在有效内容的工作表，提取前 `L1/L2/L3 = 10/50/100` 条非空行并做基础去噪（清理空行、收缩空白、裁剪超长单元格、移除全空列）；若全部工作表都为空或仅含样式/图表对象，则返回显式空表错误；当前 `.xls` 仍未支持。
 31. **PPT 轻量预览第一版** — `read_file_content` 现已支持 `.pptx`：优先通过 PowerPoint COM 导出前 `L1/L2/L3 = 1/2/3` 页幻灯片截图，并复用现有图片多模态摘要链路；若环境缺少 `pywin32` 或 COM 导出失败，则退回 `python-pptx` 提取前几页文字内容；若两条路径都不可用则返回显式错误。
+32. **独立 RAG 检索链路第一版** — 新增 `rag/` 模块与 `main_rag.py`，可对预注册知识库目录（当前默认 `study -> C:\Users\Flora\Desktop\LM Study`）执行原文抽取、切块、基于旁路 manifest 的文件级增量更新、ChromaDB 向量写入、chunk 检索、chunk rerank、file 聚合，并通过 `tools/search_knowledge.py` 预留后续接入主 Agent 的工具接口；当前 `file_score` 以 `best_chunk_score` 为主，并返回证据 chunk 摘要。
+33. **RAG Embedding 已切换到 LM Studio** — `rag/embeddings.py` 现支持 `local_hash` 与 `lmstudio` 两种 provider；当前默认通过 `http://100.69.36.118:1234/v1` 调用 `text-embedding-qwen3-embedding-0.6b`，并在 embedding 配置变化时自动重建 Chroma collection，避免旧向量与新查询向量混用。
+34. **`weseeker` 环境已完成 RAG 实测** — 已在 `conda weseeker` 环境下完成 `main_rag.py list-kb`、`index --kb study --force`、多组 `search` 查询验证；`LM Study` 目录当前可成功索引 10 个支持文件，共 71 个 chunk，另有 1 个 `.doc` 文件因暂不支持提取而跳过。
 
 ### 已实现但为 Mock
 
 - **文件发送** — send_file 仅打印日志到控制台，不实际发送
 
-**注意**：项目测试时需要在conda的base环境中进行，只有base环境才安装了项目所需依赖（conda activate base）
+**注意**：项目当前测试环境已切换到 `conda weseeker`，RAG 与主链路验证均以该环境为准（`conda activate weseeker`）
 
 
 ---
@@ -204,6 +223,7 @@ WeSeeker/
 4. **敏感信息裸露** — sensitive_sanitizer.py 为空壳，文件内容未经脱敏直接发给 LLM API
 5. **测试体系仍偏脚本化** — 多数测试以脚本输出和手工观察为主，真实 LLM / Everything 依赖较重，尚未形成稳定的自动化回归套件
 6. **多模态链路仍缺少临时产物治理** — 当前图片摘要已增加等比例缩放和标准化编码，但后续接入 PDF/PPT 转图时仍需补充临时图片文件清理与更细粒度的尺寸/质量策略
+7. **`.doc` 仍未支持内容提取** — `LM Study` 目录中的 `大模型+多模态学习路线.doc` 当前会被 RAG 索引跳过；如后续需要覆盖旧版 Word 文档，需单独补充 `.doc` 解析能力
 
 ---
 
@@ -215,6 +235,7 @@ WeSeeker/
 | **P0** | security_gate.py | 工具白名单校验、危险操作拦截、路径安全检查 |
 | **P0** | sensitive_sanitizer.py | 正则脱敏（API Key/密码/Token/私钥/连接串） |
 | **P1** | 多格式文件预览 | 完善 `_extract_docx` / `_extract_excel` / `_extract_pptx` 的复杂对象与稳定性支持 |
+| **P1** | RAG 主链路接入 | 将 `search_knowledge` 接入主 Agent，并设计与 Everything 的双路协同策略 |
 | **P1** | 搜索增强 | file_type 参数、sort_by 排序、分页翻页、搜索会话缓存 |
 | **P1** | 修复失效测试 | 更新 test_search.py / test_full_workflow.py / test_preview_full.py |
 | **P2** | conversation.py | 1 小时时间窗口、任务生命周期管理、消息清理 |
@@ -312,6 +333,27 @@ paths:                           # {username} 运行时自动替换
 
 sender:
   target: "文件传输助手"
+
+rag:
+  enabled: true
+  chroma:
+    persist_directory: "storage/chroma"
+  manifest:
+    directory: "storage/rag_manifests"
+  embedding:
+    provider: "lmstudio"
+    api_base: "http://100.69.36.118:1234"
+    model: "text-embedding-qwen3-embedding-0.6b"
+    dimension: 1024
+  chunk:
+    size: 900
+    overlap: 150
+  retrieval:
+    top_k: 30
+    max_chunks_per_file: 3
+  knowledge_bases:
+    study:
+      root_path: "C:\\Users\\Flora\\Desktop\\LM Study"
 ```
 
 ---
@@ -327,8 +369,10 @@ sender:
 | 2026-03-11 | 未提交 | 功能+测试+文档+依赖 | 为 `read_file_content` 增加图片文件预览结果协议，接入 `LLMClient` 的多模态图片消息构造与 `Agent` 的图片摘要分支；新增 `test/test_image_preview_multimodal.py`，并引入 `Pillow` 用于图片标准化编码、MPO 兼容和等比例缩放；新增 `settings.yaml` 的多模态图片最长边配置（image=2048、pdf=2105、ppt=3072）；同时补充 `system_prompt_2.md` 的系统目录探索规则，指导模型在“桌面/下载/文档里有没有某类相关文件和文件夹”场景下优先先看一级目录结构；在 conda base 环境下完成编译检查、FakeLLM 测试及真实 LM Studio 图片预览链路验证。 |
 | 2026-03-12 | `805f15f` | 功能+文档+依赖 | 实现 PDF 预览第一版：`tools/file_summarizer.py` 使用 PyMuPDF 将 PDF 前几页渲染为 PNG，并复用现有图片多模态摘要链路；新增 `preview.pdf.depth_pages`（L1/L2/L3 默认 1/2/3 页）与 `preview.pdf.render_scale` 配置，实现预览深度和实际取页/渲染倍率解耦；同时将文本/Excel 的深度阈值也迁移到 `settings.yaml -> preview`（文本 2000/5000/8000 字，Excel 10/50/100 行）；为 PDF/PPT 图片摘要增加失败后的自动降采样重试，修复部分高分辨率 PDF 页面在 LM Studio 中 `failed to process image` 的问题；同步更新 `system_prompt_2.md`、`requirements.txt` 与 `task_background.md`。 |
 | 2026-03-16 | `4c17655` | 功能+测试+文档+依赖 | 为 `read_file_content` 实现 `.docx` 正文纯文字预览，复用现有文本深度与摘要链路；空白文档或主要由图片/复杂对象组成的 Word 文档返回显式错误；新增 `python-docx` 依赖与 `test/test_docx_preview.py`，并使用 `C:\Users\Flora\Desktop\Blade_det prj\总体设计.docx` 完成 base 环境实测。 |
-| 2026-03-16 | 未提交 | 功能+测试+文档+依赖 | 为 `read_file_content` 实现 `.xlsx` 预览第一版：基于 `openpyxl` 自动选择首个非空工作表，提取前若干非空行并做基础去噪，同时对全空工作簿返回显式错误；新增 `openpyxl` 依赖与 `test/test_xlsx_preview.py`，并使用 `C:\Users\Flora\Desktop\研一\副本支部花名册.xlsx` 完成 base 环境实测。 |
-| 2026-03-16 | 未提交 | 功能+文档+依赖 | 为 `read_file_content` 实现 `.pptx` 轻量预览第一版：优先使用 PowerPoint COM 导出前几页截图并复用现有图片摘要链路，若缺少 `pywin32` 或 COM 导出失败则退回 `python-pptx` 文字提取；新增 `pywin32`、`python-pptx` 依赖，并同步更新 prompt、README 与 `task_background.md`。 |
+| 2026-03-16 | `3407e96` | 功能+测试+文档+依赖 | 为 `read_file_content` 实现 `.xlsx` 预览第一版：基于 `openpyxl` 自动选择首个非空工作表，提取前若干非空行并做基础去噪，同时对全空工作簿返回显式错误；新增 `openpyxl` 依赖与 `test/test_xlsx_preview.py`，并使用 `C:\Users\Flora\Desktop\研一\副本支部花名册.xlsx` 完成 base 环境实测。 |
+| 2026-03-16 | `f107677` | 功能+文档+依赖 | 为 `read_file_content` 实现 `.pptx` 轻量预览第一版：优先使用 PowerPoint COM 导出前几页截图并复用现有图片摘要链路，若缺少 `pywin32` 或 COM 导出失败则退回 `python-pptx` 文字提取；新增 `pywin32`、`python-pptx` 依赖，并同步更新 prompt、README 与 `task_background.md`；同时在 Agent 与 CLI 退出流程中加入会话级临时目录登记与安全清理。 |
+| 2026-03-17 | 未提交 | 功能+配置+文档+依赖 | 新增独立 RAG 检索链路：添加 `rag/` 模块、`main_rag.py`、`tools/search_knowledge.py`、`settings.yaml -> rag` 与 `chromadb` 依赖；实现预注册知识库、文件级增量 manifest、原文抽取、切块、chunk rerank、file 聚合与证据 chunk 摘要返回；初版使用 `local_hash` embedding 打通链路。 |
+| 2026-03-18 | 未提交 | 功能+测试+文档+配置 | RAG embedding 接入 LM Studio 的 `text-embedding-qwen3-embedding-0.6b`，`rag/embeddings.py` 新增 `lmstudio` provider，索引在 embedding 配置变化时自动重建 collection；测试环境文档统一切换到 `conda weseeker`，并在 `LM Study` 上完成 extractor 全量检查、`index --force` 与多组 `search` 查询实测，当前 10 个支持文件索引成功、1 个 `.doc` 文件因 `unsupported_extension` 被跳过。 |
 
 ---
 

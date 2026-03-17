@@ -67,3 +67,49 @@ paths:
 
 sender:
   target: "文件传输助手"  # 默认发送目标
+
+rag:
+  enabled: true
+  chroma:
+    persist_directory: "storage/chroma"
+  manifest:
+    directory: "storage/rag_manifests"
+  embedding:
+    provider: "lmstudio"   # 可选: local_hash / lmstudio
+    api_base: "http://100.69.36.118:1234"
+    model: "text-embedding-qwen3-embedding-0.6b"
+    timeout: 120
+    batch_size: 16
+    dimension: 1024
+  chunk:
+    size: 900
+    overlap: 150
+  retrieval:
+    top_k: 30
+    max_chunks_per_file: 3
+  supported_extensions:
+    - ".txt"
+    - ".md"
+    - ".markdown"
+    - ".py"
+    - ".js"
+    - ".json"
+    - ".yaml"
+    - ".yml"
+    - ".csv"
+    - ".log"
+    - ".ini"
+    - ".conf"
+    - ".docx"
+    - ".xlsx"
+    - ".pdf"
+    - ".pptx"
+  knowledge_bases:
+    study:
+      display_name: "LM Study"
+      root_path: "C:\\Users\\Flora\\Desktop\\LM Study"
+      aliases:
+        - "study"
+        - "lm study"
+        - "学习资料"
+        - "知识库"
